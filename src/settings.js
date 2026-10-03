@@ -49,9 +49,17 @@ function sanitize(raw) {
     : DEFAULTS.city;
 
   out.feeds = (Array.isArray(out.feeds) ? out.feeds : [])
-    .filter((f) => f && typeof f.url === 'string' && /^https?:\/\//i.test(f.url))
-    .slice(0, 8)
-    .map((f) => ({ name: str(f.name, 30, new URL(f.url).hostname), url: f.url.trim().slice(0, 500) }));
+    .map((f) => {
+      try {
+        const u = new URL(typeof f?.url === 'string' ? f.url.trim() : '');
+        if (!/^https?:$/.test(u.protocol)) return null;
+        return { name: str(f.name, 30, u.hostname), url: u.href.slice(0, 500) };
+      } catch {
+        return null; // URL inválida: descarta só este feed, não as configurações inteiras
+      }
+    })
+    .filter(Boolean)
+    .slice(0, 8);
   if (!out.feeds.length) out.feeds = structuredClone(DEFAULTS.feeds);
   return out;
 }
