@@ -73,3 +73,13 @@ renderer/vendor/ Three.js r186 (MIT) e fonte Saira (SIL OFL), embutidos para fun
 2. Agenda e tarefas do dia (Google Calendar e Google Tasks)
 3. Perguntas e respostas com IA (API gratuita, com modelo local pequeno como reserva)
 4. Voz de entrada (Vosk ou Whisper)
+
+## Atualizar no Windows
+
+Clone o projeto uma vez (precisa do Git instalado):
+
+```
+git clone -b claude/jarvis-computer-project-ts8onz https://github.com/wenzel-max/jarvis.git
+```
+
+Depois, dê dois cliques em `atualizar.bat` para baixar as novidades, instalar dependências e abrir o app. Para só abrir, use `iniciar.bat`. As configurações ficam em `%APPDATA%\jarvis`, então atualizar não apaga nada.
