@@ -2,9 +2,43 @@
 
 const stripAccents = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
 
-// O Whisper escreve "Jarvis" de várias formas: Jarvis, Jarves, Garvis, Charvis, Jarbis...
-const WAKE_WORD = /^(?:dj|j|g|ch|x)[ae]r[vb][eiy][sz]?$/;
-const WORDS_TO_LOOK_AT = 4;   // "Ei, Jarvis, que horas são?" ainda conta; "Eu falei com o Jarvis ontem" não
+// O Whisper escreve "Jarvis" de muitas formas: Jarvis, Jarves, Garvis, Yarvis, Charvis, Jarbis, "Já vis"...
+// Vale a grafia certa, as variantes comuns e qualquer palavra parecida (até 2 letras de diferença) que
+// comece com um som de J, para não perder o nome por causa de uma letra.
+const NAME = 'jarvis';
+const WAKE_WORD = /^(?:dj|j|g|ch|x|y)[ae]r[vb][eiy][sz]?$/;
+const STARTS_LIKE_J = /^(?:j|g|y|dj|ch|x)/;
+const WORDS_TO_LOOK_AT = 4;   // "Ei, Jarvis, ..." ainda conta; "Eu falei com o Jarvis ontem" não
+
+function distance(a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+}
+
+function isNameWord(raw) {
+  const w = stripAccents(raw);
+  if (w.length < 4 || w.length > 9) return false;
+  return WAKE_WORD.test(w) || (STARTS_LIKE_J.test(w) && distance(w, NAME) <= 2);
+}
+
+/** Quantas palavras (0, 1 ou 2) começando em `i` formam o nome: "Jarvis" ou "já vis" / "jar vis" em duas partes. */
+function nameLength(words, i) {
+  if (isNameWord(words[i])) return 1;
+  if (i + 1 < words.length) {
+    const joined = stripAccents(words[i]) + stripAccents(words[i + 1]);
+    if (joined.length >= 5 && STARTS_LIKE_J.test(joined) && distance(joined, NAME) <= 1) return 2;
+  }
+  return 0;
+}
 
 const trimEdges = (s) => s.replace(/^[\s,.:;!?\-–]+/, '').replace(/[\s,;:\-–]+$/, '').trim();
 
@@ -15,17 +49,19 @@ const trimEdges = (s) => s.replace(/^[\s,.:;!?\-–]+/, '').replace(/[\s,;:\-–
  */
 export function parseCommand(text) {
   const words = String(text ?? '').trim().split(/\s+/).filter(Boolean);
-  const isName = (w) => WAKE_WORD.test(stripAccents(w));
   for (let i = 0; i < Math.min(WORDS_TO_LOOK_AT, words.length); i++) {
-    if (!isName(words[i])) continue;
-    const after = trimEdges(words.slice(i + 1).join(' '));
+    const n = nameLength(words, i);
+    if (!n) continue;
+    const after = trimEdges(words.slice(i + n).join(' '));
     const before = trimEdges(words.slice(0, i).join(' '));
     const bare = /^(ei|ola|oi|ok|okay|hey|hei|e ai|bom dia|boa tarde|boa noite)$/.test(speechKey(before));   // só uma saudação antes do nome
     return { woke: true, command: after || (bare ? '' : before) };
   }
-  const last = words.length - 1;
-  if (last >= WORDS_TO_LOOK_AT && isName(words[last])) {
-    return { woke: true, command: trimEdges(words.slice(0, last).join(' ')) };
+  for (const n of [1, 2]) {   // o nome no fim: "..., Jarvis?"
+    const i = words.length - n;
+    if (i >= WORDS_TO_LOOK_AT && nameLength(words, i) === n) {
+      return { woke: true, command: trimEdges(words.slice(0, i).join(' ')) };
+    }
   }
   return { woke: false, command: words.join(' ') };
 }

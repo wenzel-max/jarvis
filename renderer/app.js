@@ -66,7 +66,7 @@ function setState(state) {
   // que ele termina, por causa da sobra de eco no ambiente.
   clearTimeout(resumeTimer);
   if (state === 'speaking' || state === 'thinking') {
-    mic.setDuck(true);
+    mic.setDuck(state);
   } else if (state === 'idle') {
     resumeTimer = setTimeout(() => mic.setDuck(false), 700);
   } else {
@@ -214,6 +214,7 @@ async function speak(sentences, { startState = 'speaking' } = {}) {
       settings,
       onSentence: () => {
         if (id !== speakId) return;
+        if (pendingAsk) pendingAsk.started = true;
         if (hud.dataset.state !== 'speaking') setState('speaking');
       },
     });
@@ -264,6 +265,8 @@ function sentenceQueue() {
 }
 
 let currentQueue = null;
+let pendingAsk = null;   // { text, started }: pergunta feita e ainda sem resposta falada
+let carried = null;      // pergunta cortada por você enquanto ele pensava: a continuação se junta a ela
 
 /**
  * Faz a pergunta à IA e fala a resposta. Devolve `true` se a resposta terminou sem ser
@@ -274,6 +277,7 @@ async function ask(question) {
   abortAsk();
   const queue = sentenceQueue();
   currentQueue = queue;
+  pendingAsk = { text: question, started: false };
 
   const speaking = speak(queue, { startState: 'thinking' });
   const sid = speakId;   // speak() acabou de gerar o id desta fala
@@ -297,8 +301,25 @@ async function ask(question) {
     $('#btn-stop').hidden = true;
   }
   await speaking;
-  if (reply.error && (early || sid === speakId)) showNotice(reply.error);
+  pendingAsk = null;
+  // Voz só: um erro nunca pode ficar só num aviso na tela. Ele explica em voz alta, curto, e o aviso traz o detalhe.
+  if (reply.error && (early || sid === speakId)) {
+    showNotice(reply.error);
+    await speak([spokenError(reply.error)]);
+    return true;
+  }
   return early || sid === speakId;
+}
+
+/** O que o Jarvis diz quando algo falha: curto e sem termo técnico. */
+function spokenError(error) {
+  const t = error.toLowerCase();
+  if (/chave do groq/.test(t)) return 'Tem um problema com a chave do Groq. Dá uma olhada nos Ajustes.';
+  if (/limite gratuito/.test(t)) return 'Atingi o limite gratuito por agora. Tenta de novo daqui a pouco.';
+  if (/sem conexão|internet/.test(t)) return 'Estou sem conexão com a internet.';
+  if (/demorou demais/.test(t)) return 'Demorei demais para responder. Pode repetir?';
+  if (/modelo/.test(t)) return 'O modelo de inteligência artificial não respondeu. Dá uma olhada nos Ajustes.';
+  return 'Não consegui responder agora. Tenta de novo.';
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +327,7 @@ async function ask(question) {
 // O microfone fica aberto; o Jarvis só age quando ouve "Jarvis" no começo da frase,
 // ou logo depois de uma resposta (FOLLOW_UP_MS), para a conversa continuar sem repetir o nome.
 // ---------------------------------------------------------------------------
-const FOLLOW_UP_MS = 15000;
+const FOLLOW_UP_MS = 30000;
 const MAX_TRANSCRIPTIONS_PER_MIN = 10;   // o plano gratuito do Whisper permite 20
 const MAX_MISSES = 2;                    // "não entendi" seguidos antes de voltar a esperar o nome
 const NOTICE_EVERY_MS = 60000;
@@ -359,6 +380,10 @@ async function transcribeSegment(seg) {
 
 /** Você começou a falar por cima do Jarvis: ele para na hora e passa a ouvir. */
 function interrupt() {
+  const was = hud.dataset.state;
+  // Se ele ainda estava pensando (nada falado), o que você diz agora continua a pergunta, não a substitui.
+  carried = was === 'thinking' && pendingAsk && !pendingAsk.started ? pendingAsk.text : null;
+  api.log('app', `interrompido enquanto ${was === 'thinking' ? 'pensava' : 'falava'}${carried ? `; pergunta guardada: "${carried}"` : ''}`);
   speakId++;
   abortAsk();
   voice.stop();
@@ -368,10 +393,23 @@ function interrupt() {
   setState('listening');
 }
 
+const lastHint = { at: 0 };
+
+/** Ouviu uma frase sem o nome: avisa de leve (no máximo uma vez a cada 20 s) o que ouviu, para você saber por quê. */
+function hintIgnored(text) {
+  if (text.split(/\s+/).length < 3 || Date.now() - lastHint.at < 20000) return;
+  if (hud.dataset.state !== 'idle') return;
+  lastHint.at = Date.now();
+  showNotice(`Ouvi: "${text.slice(0, 120)}". Para eu responder, comece com "Jarvis".`);
+}
+
 /** Uma frase captada pelo microfone: transcreve e decide se é com o Jarvis. */
 async function handleSegment(seg) {
   if (transcribing) { pendingSeg = seg; return; }
   const inConversation = Date.now() < followUntil || seg.barge;
+  // a pergunta que ele estava pensando quando você falou por cima (só vale para esta frase)
+  const carry = seg.barge ? carried : null;
+  if (seg.barge) carried = null;
   transcribing = true;
   const reply = await transcribeSegment(seg);
   transcribing = false;
@@ -379,9 +417,19 @@ async function handleSegment(seg) {
   const next = () => { if (pendingSeg) { const p = pendingSeg; pendingSeg = null; handleSegment(p); } };
 
   if (reply.error) {
-    if (reply.error === 'limite local') { next(); return; }
-    if (!isMiss(reply.error)) { pendingSeg = null; notice(reply.error); return; }   // chave, conexão, limite...
-    if (!inConversation || seg.barge || pendingSeg) { next(); return; }   // barulho, interrupção sem palavras, ou você já continuou: fica quieto
+    if (reply.error === 'limite local') { api.log('ouvi', 'frase ignorada: limite local de transcrições por minuto'); next(); return; }
+    if (!isMiss(reply.error)) {                                      // chave, conexão, limite...
+      pendingSeg = null;
+      notice(reply.error);
+      if (inConversation) await speak([spokenError(reply.error)]);
+      return;
+    }
+    api.log('ouvi', `não entendi${seg.barge ? ' (interrupção)' : ''}: silêncio, ruído ou fala baixa`);
+    if (seg.barge && !pendingSeg) {                                  // você cortou o Jarvis e não deu para entender
+      if (carry) { if (await ask(carry)) openFollowUp(); } else { await speak(['Não entendi, pode repetir?']); openFollowUp(); }
+      return;
+    }
+    if (!inConversation || pendingSeg) { next(); return; }           // barulho qualquer, ou você já continuou: fica quieto
     misses++;
     if (misses > MAX_MISSES) { misses = 0; followUntil = 0; renderStatus(); return; }
     await speak(['Não entendi, pode repetir?']);
@@ -390,7 +438,12 @@ async function handleSegment(seg) {
   }
 
   const parsed = parseCommand(reply.text);
-  if (!parsed.woke && !inConversation) { next(); return; }           // conversa ao redor: não é com o Jarvis
+  if (!parsed.woke && !inConversation) {                             // conversa ao redor, ou o nome não foi entendido
+    api.log('ouvi', `ignorado (sem "Jarvis"): "${reply.text}"`);
+    hintIgnored(reply.text);
+    next();
+    return;
+  }
   misses = 0;
   let command = parsed.command;
 
@@ -402,12 +455,17 @@ async function handleSegment(seg) {
     if (r2.text) command = `${command} ${parseCommand(r2.text).command}`.trim();
   }
 
+  const short = command ? classifyShort(command) : null;
+  const media = !short && command && spotifyOn ? classifyMedia(command) : null;
+  // "Jarvis, qual o próximo jogo..." [pensando] "...do Flamengo?": a continuação completa a pergunta. "Para" e comandos de música não.
+  if (carry && !short && !media) command = `${carry} ${command}`.trim();
+  api.log('ouvi', `comando: "${command}"${carry ? ' (continuação)' : ''}`);
+
   if (!command) {                                // só chamou o nome
     await speak(['Pois não?']);
     openFollowUp();
     return;
   }
-  const short = classifyShort(command);
   if (short === 'stop') { openFollowUp(); return; }                 // "para", "chega": fica quieto, ouvindo
   if (short === 'thanks') {
     await speak(['De nada!']);
@@ -415,7 +473,6 @@ async function handleSegment(seg) {
     return;
   }
   // "pausa", "próxima", "volume 40": direto no Spotify, sem esperar a IA. A música é o retorno; só erros e "que música é essa" falam.
-  const media = spotifyOn ? classifyMedia(command) : null;
   if (media) {
     const r = await api.mediaControl(media.action, media.value);
     const said = r.ok ? r.message : r.error;
@@ -431,7 +488,11 @@ mic.onSpeechStart = () => {
 };
 mic.onBargeIn = interrupt;
 mic.onSpeechEnd = (seg) => {
-  if (!seg) { if (hud.dataset.state === 'listening') setState('idle'); return; }
+  if (!seg) {
+    api.log('mic', 'trecho descartado: voz curta demais (estalo, tosse ou volume muito baixo)');
+    if (hud.dataset.state === 'listening') setState('idle');
+    return;
+  }
   handleSegment(seg);
 };
 
@@ -447,7 +508,7 @@ async function startMic() {
     notice(micErrorMessage(err), { force: true });
     return false;
   }
-  mic.setDuck(hud.dataset.state === 'speaking' || hud.dataset.state === 'thinking');
+  mic.setDuck(['speaking', 'thinking'].includes(hud.dataset.state) ? hud.dataset.state : false);
   renderMicButton();
   return true;
 }
@@ -594,8 +655,15 @@ async function refreshSpotifyStatus() {
   return s;
 }
 
+async function refreshDiag() {
+  const box = $('#diag-log');
+  box.value = (await api.logTail()) || 'Nada registrado ainda.';
+  box.scrollTop = box.scrollHeight;
+}
+
 function openSettings() {
   fillSettings();
+  refreshDiag();
   refreshGoogleStatus();
   refreshSpotifyStatus();
   refreshMicList();
@@ -730,6 +798,16 @@ function bindSettings() {
     $('#spotify-msg').hidden = true;
     refreshSpotifyStatus();
   });
+  $('#btn-diag-refresh').addEventListener('click', refreshDiag);
+  $('#btn-diag-copy').addEventListener('click', () => {
+    const box = $('#diag-log');
+    box.focus();
+    box.select();
+    document.execCommand('copy');
+    box.setSelectionRange(0, 0);
+  });
+  $('#btn-diag-clear').addEventListener('click', async () => { await api.logClear(); refreshDiag(); });
+  $('#btn-diag-folder').addEventListener('click', () => api.logFolder());
   $('#set-websearch').addEventListener('change', (e) => save({ webSearch: e.target.checked }));
   $('#set-bargein').addEventListener('change', (e) => { save({ bargeIn: e.target.checked }); mic.bargeIn = e.target.checked; });
   $('#set-listen').addEventListener('change', (e) => {

@@ -9,7 +9,8 @@ const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 const STT_ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;   // ~15 s de fala em webm/opus tem poucas dezenas de KB
 const AUDIO_TYPES = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/mpeg': 'mp3' };
-const TOTAL_TIMEOUT_MS = 40000;
+const TOTAL_TIMEOUT_MS = 100000;   // uma pesquisa na web pode levar 30 s ou mais; o tempo de cada volta é limitado à parte
+const TURN_TIMEOUT_MS = 30000;     // uma volta de conversa parada por mais que isso é falha
 const MIN_SENTENCE = 25;   // frases muito curtas são juntadas à seguinte
 const MIN_FIRST = 14;      // a primeira frase sai mais cedo: é ela que decide quando o Jarvis começa a falar
 const MIN_FIRST_AT_COMMA = 30; // sem ponto final à vista, a primeira frase pode fechar numa vírgula
@@ -137,7 +138,7 @@ function systemPrompt({ userName, city, capabilities = [] }) {
     'Nada de markdown, listas, tabelas, emojis nem links. Escreva números, horas e unidades como se fala ("vinte e oito graus", "três e meia").',
     'Se a pergunta for vaga, devolva uma pergunta curta. Se não souber, diga isso com naturalidade. Chame a pessoa pelo nome só de vez em quando.',
     capabilities.length
-      ? `Você pode ${capabilities.join('; ')}. Use as ferramentas para isso, em vez de inventar. Antes de uma ferramenta demorada, como pesquisar, diga uma frase curtinha ("Deixa eu ver isso."). Depois de usar uma ferramenta, conte o resultado de forma natural e curta, sem ler ids. Datas como "amanhã" ou "sexta" você calcula a partir de agora: ${localIso(now)} (fuso ${tz}).`
+      ? `Você pode ${capabilities.join('; ')}. Use as ferramentas para isso, em vez de inventar. Antes de uma ferramenta demorada, como pesquisar, diga uma frase curtinha ("Deixa eu ver isso."). Depois de usar uma ferramenta, conte o resultado de forma natural e curta, sem ler ids. Se a ferramenta falhar ou não achar nada, diga isso com franqueza em uma frase, nunca fique em silêncio e nunca prometa checar de novo. Datas como "amanhã" ou "sexta" você calcula a partir de agora: ${localIso(now)} (fuso ${tz}).`
       : '',
     online ? '' : 'Você não tem acesso à internet nem ao computador do usuário nesta conversa.',
     `Agora é ${agora}. O usuário mora em ${city}.`,
@@ -210,7 +211,7 @@ async function pickModel({ key, bad, signal, endpoint, kind = 'chat' }) {
  * Faz a pergunta e entrega a resposta em frases (onSentence) conforme chegam.
  * Devolve o texto completo. `endpoint` existe só para testes.
  */
-async function streamTurn({ key, model, messages, tools, signal, onSentence, endpoint = ENDPOINT }) {
+async function streamTurn({ key, model, messages, tools, toolChoice = 'auto', signal, onSentence, endpoint = ENDPOINT }) {
   const withTools = tools?.length > 0;
   let res;
   try {
@@ -220,7 +221,7 @@ async function streamTurn({ key, model, messages, tools, signal, onSentence, end
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model, messages, stream: true, temperature: withTools ? 0.4 : 0.6, max_tokens: 400,
-        ...(withTools ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
+        ...(withTools ? { tools, tool_choice: toolChoice, parallel_tool_calls: false } : {}),
       }),
     });
   } catch (e) {
@@ -291,7 +292,7 @@ function parseArgs(text) {
   }
 }
 
-async function ask({ question, history }, { settings, onSentence, endpoint, key: keyOverride, tools }) {
+async function ask({ question, history }, { settings, onSentence, endpoint, key: keyOverride, tools, fillerMs = 7000, turnTimeoutMs = TURN_TIMEOUT_MS }) {
   const q = typeof question === 'string' ? question.trim().slice(0, 500) : '';
   if (!q) return { error: 'Digite uma pergunta.' };
   const key = keyOverride ?? readKey();
@@ -309,13 +310,16 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       { role: 'user', content: q },
     ];
     let model = settings.aiModel;
-    let useTools = defs.length > 0;
+    // 'auto': o modelo escolhe; 'none': as ferramentas continuam na lista (a API exige isso quando há chamadas
+    // no histórico) mas ele não pode chamar mais nenhuma; 'off': nunca houve ferramentas.
+    let mode = defs.length > 0 ? 'auto' : 'off';
     const turn = async () => {
-      const run = () => streamTurn({ key, model, messages, tools: useTools ? defs : undefined, signal: ctrl.signal, onSentence, endpoint });
+      const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(turnTimeoutMs)]);
+      const run = () => streamTurn({ key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : 'auto', signal, onSentence, endpoint });
       try {
         return await run();
       } catch (e) {
-        if (e.isToolError && useTools) { useTools = false; return run(); }   // sem ferramentas, pelo menos responde
+        if (e.isToolError && mode === 'auto') { mode = 'none'; return run(); }   // sem poder chamar ferramentas, pelo menos responde
         // Modelo recusado (renomeado ou aposentado): troca por um que a conta tenha e tenta de novo.
         if (!e.isModelError || ctrl.signal.aborted) throw e;
         const alt = await pickModel({ key, bad: model, signal: ctrl.signal, endpoint });
@@ -325,18 +329,31 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       }
     };
 
+    // Enquanto uma ferramenta demora (pesquisa na web), o Jarvis avisa em voz alta que ainda está trabalhando.
+    const withProgress = async (work) => {
+      const timers = [fillerMs, fillerMs * 3].map((ms, i) => setTimeout(() => {
+        if (!ctrl.signal.aborted) onSentence(i === 0 ? 'Só mais um instante.' : 'Ainda estou procurando, só mais um pouquinho.');
+      }, ms));
+      try { return await work(); } finally { timers.forEach(clearTimeout); }
+    };
+
     let spoken = '';
     for (let step = 0; ; step++) {
       const t = await turn();
       spoken = `${spoken} ${t.text}`.trim();
-      if (!t.toolCalls.length || !useTools) break;
-      if (step >= MAX_TOOL_STEPS) { useTools = false; messages.push({ role: 'user', content: 'Responda agora com o que você já tem.' }); const last = await turn(); spoken = `${spoken} ${last.text}`.trim(); break; }
+      if (!t.toolCalls.length || mode !== 'auto') break;
+      if (step >= MAX_TOOL_STEPS) {   // preso em ferramentas: força uma resposta com o que já tem
+        mode = 'none';
+        messages.push({ role: 'user', content: 'Responda agora com o que você já tem.' });
+        spoken = `${spoken} ${(await turn()).text}`.trim();
+        break;
+      }
       messages.push({
         role: 'assistant', content: t.text || null,
         tool_calls: t.toolCalls.map((c, i) => ({ id: c.id || `call_${step}_${i}`, type: 'function', function: { name: c.name, arguments: c.arguments || '{}' } })),
       });
       for (const [i, c] of t.toolCalls.entries()) {
-        const result = await tools.run(c.name, parseArgs(c.arguments), { signal: ctrl.signal });
+        const result = await withProgress(() => tools.run(c.name, parseArgs(c.arguments), { signal: ctrl.signal }));
         messages.push({ role: 'tool', tool_call_id: c.id || `call_${step}_${i}`, content: String(result).slice(0, TOOL_RESULT_MAX) });
       }
     }
@@ -347,6 +364,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       const timedOut = ctrl.signal.reason?.message === 'timeout';
       return timedOut ? { error: 'O Groq demorou demais para responder. Tente de novo.' } : { aborted: true };
     }
+    if (e.name === 'TimeoutError') return { error: 'O Groq demorou demais para responder. Tente de novo.' };
     return { error: e.message };
   } finally {
     clearTimeout(timer);

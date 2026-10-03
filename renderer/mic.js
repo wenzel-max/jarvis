@@ -11,7 +11,7 @@ const SILENCE_SHORT_MS = 850;      // fim de frase depois de pouca fala ("Jarvis
 const SILENCE_LONG_MS = 600;       // fim de frase depois de uma fala mais longa: responde mais rápido
 const SHORT_SPEECH_MS = 900;
 const KEEP_TRAILING_MS = 250;      // do silêncio final, só isso vai para o Whisper (menos áudio, resposta mais rápida)
-const MIN_VOICED_MS = 350;         // menos voz que isso é estalo ou tosse, não fala
+const MIN_VOICED_MS = 280;         // menos voz que isso é estalo ou tosse, não fala
 const MAX_SEGMENT_MS = 20000;      // frase longa demais é cortada e enviada
 const WHISPER_RATE = 16000;        // taxa nativa do Whisper; também deixa o arquivo pequeno
 const MAX_CANDIDATES = 8;
@@ -128,7 +128,7 @@ export class Mic {
     this.preferred = '';   // parte do nome do microfone escolhido pelo usuário ('' = automático)
     this.running = false;
     this.paused = false;
-    this.duck = false;           // o Jarvis está pensando/falando: só uma fala forte e firme conta
+    this.duck = false;           // false | 'thinking' | 'speaking': o que o Jarvis está fazendo agora
     this.bargeIn = true;         // se falso, o microfone fica mudo enquanto o Jarvis fala (caixas de som sem fone)
     this.onBargeIn = null;       // () => void; você começou a falar por cima do Jarvis
     this.onSpeechStart = null;   // () => void
@@ -253,10 +253,14 @@ export class Mic {
     }
   }
 
-  /** Liga/desliga o modo "Jarvis falando": o limiar sobe para não confundir a voz dele (eco) com a sua. */
-  setDuck(on) {
-    this.duck = on;
-    if (on) { this._loud = 0; }
+  /**
+   * O que o Jarvis está fazendo: false (nada), 'thinking' (pensando: sem som saindo, então qualquer fala firme sua
+   * é uma continuação) ou 'speaking' (falando: o limiar sobe para não confundir a voz dele, o eco, com a sua).
+   * `true` vale como 'speaking'.
+   */
+  setDuck(mode) {
+    this.duck = mode === true ? 'speaking' : mode || false;
+    if (this.duck) this._loud = 0;
   }
 
   /** Zera o pico medido (usado pelo teste de microfone). */
@@ -282,8 +286,8 @@ export class Mic {
     }
     // O ruído de fundo continua sendo acompanhado enquanto ninguém fala.
     if (!this._seg && rms < this._floor * 3.5) this._floor = this._floor * 0.97 + rms * 0.03;
-    let threshold = Math.min(0.04, Math.max(0.008, this._floor * 3.5));
-    if (this.duck && !this._seg) threshold = Math.max(threshold * 2, BARGE_MIN_THRESHOLD);
+    let threshold = Math.min(0.04, Math.max(0.006, this._floor * 3.5));
+    if (this.duck === 'speaking' && !this._seg) threshold = Math.max(threshold * 2, BARGE_MIN_THRESHOLD);
     const voiced = rms > threshold;
     if (voiced) this.stats.speechMs += blockMs;
     const copy = Float32Array.from(data);

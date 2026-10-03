@@ -76,7 +76,7 @@ const CALENDAR_TOOLS = ['agenda_listar', 'agenda_criar', 'agenda_alterar', 'agen
  * `google`, `web` e `spotify` são injetados (e simulados nos testes).
  * `isGoogleConnected()` e `settings()` são lidos a cada pergunta, para refletir o que mudou nos Ajustes.
  */
-function createTools({ google, web, spotify, isGoogleConnected, isSpotifyConnected, settings }) {
+function createTools({ google, web, spotify, isGoogleConnected, isSpotifyConnected, settings, log }) {
   const handlers = {
     async pesquisar_na_internet({ consulta }, ctx) {
       const q = str(consulta).trim().slice(0, 300);
@@ -131,9 +131,14 @@ function createTools({ google, web, spotify, isGoogleConnected, isSpotifyConnect
     async run(name, args, ctx = {}) {
       const fn = handlers[name];
       if (!fn) return `A ferramenta ${name} não existe.`;
+      const t0 = Date.now();
+      const brief = (v) => String(v).replace(/\s+/g, ' ').slice(0, 220);
       try {
-        return await fn(args && typeof args === 'object' ? args : {}, ctx);
+        const out = await fn(args && typeof args === 'object' ? args : {}, ctx);
+        log?.('ferramenta', `${name} ${brief(JSON.stringify(args))} -> ${brief(out)} (${Date.now() - t0} ms)`);
+        return out;
       } catch (e) {
+        log?.('ferramenta', `${name} ${brief(JSON.stringify(args))} FALHOU: ${brief(e.message)} (${Date.now() - t0} ms)`);
         return `Não deu certo: ${e.message}`;
       }
     },

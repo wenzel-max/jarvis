@@ -6,6 +6,7 @@ const tts = require('./src/tts');
 const feeds = require('./src/feeds');
 const ai = require('./src/ai');
 const secrets = require('./src/secrets');
+const log = require('./src/log');
 const google = require('./src/google');
 const spotify = require('./src/spotify');
 const { createTools } = require('./src/tools');
@@ -62,6 +63,7 @@ async function boot() {
   settings.init(app.getPath('userData'));
   tts.init(path.join(app.getPath('userData'), 'tts-cache'));
   ai.init(app.getPath('userData'));
+  log.init(app.getPath('userData'));
   secrets.init(app.getPath('userData'), safeStorage);
   google.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
   spotify.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
@@ -69,6 +71,7 @@ async function boot() {
     google,
     web: (q, ctx) => ai.webSearch(q, { settings: settings.get(), signal: ctx?.signal, onSetting: (k, v) => settings.update({ [k]: v }) }),
     isGoogleConnected: () => google.status().connected,
+    log: (kind, text) => log.write(kind, text),
     spotify: { definitions: spotify.definitions, handlers: spotify.handlers },
     isSpotifyConnected: () => spotify.status().connected,
     settings: () => settings.get(),
@@ -136,6 +139,7 @@ function registerIpc() {
       tools,
       onSentence: (text) => { if (!e.sender.isDestroyed()) e.sender.send('ai:sentence', { id, text }); },
     }).then((reply) => {
+      if (reply.error) log.write('ia', `erro: ${reply.error}`);
       // Se o modelo configurado foi trocado por outro que funcionou, guarda o novo.
       if (reply.model && reply.model !== settings.get().aiModel) settings.update({ aiModel: reply.model });
       return reply;
@@ -157,8 +161,16 @@ function registerIpc() {
     if (!req || !allowed.includes(req.action)) return { ok: false, error: 'Comando de música desconhecido.' };
     try { return { ok: true, message: await spotify.control(req.action, req.value) }; } catch (err) { return { ok: false, error: err.message }; }
   });
+  // o renderer registra o que ouviu e por que ignorou, para o Diagnóstico nos Ajustes
+  ipcMain.handle('log:write', (_e, kind, text) => {
+    if (['ouvi', 'mic', 'app'].includes(kind) && typeof text === 'string') log.write(kind, text.slice(0, 500));
+  });
+  ipcMain.handle('log:tail', () => log.tail(40));
+  ipcMain.handle('log:clear', () => { log.clear(); return true; });
+  ipcMain.handle('log:folder', () => { shell.showItemInFolder(log.location()); });
   ipcMain.handle('stt:transcribe', async (_e, req) => {
     const reply = await ai.transcribe(req || {}, { settings: settings.get() });
+    if (reply.error && !/^Não entendi/.test(reply.error)) log.write('voz', `transcrição falhou: ${reply.error}`);
     if (reply.model && reply.model !== settings.get().sttModel) settings.update({ sttModel: reply.model });
     return reply;
   });

@@ -91,6 +91,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .steps { font-size: 0.88rem; color: var(--dim); font-weight: 300; line-height: 1.45; }
 .steps summary { cursor: pointer; color: var(--ink); }
 .steps ol { margin: 0.6rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; }
+.diag { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--line); border-radius: 3px; background: #1a1109; color: var(--ink); font: 0.78rem/1.45 Consolas, 'Cascadia Mono', monospace; resize: vertical; }
 .steps code { color: var(--gold); font-size: 0.85em; word-break: break-all; }
 .steps b { color: var(--ink); font-weight: 500; }
 

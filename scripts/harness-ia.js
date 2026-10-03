@@ -16,6 +16,7 @@ const settings = {
   aiModel: 'llama-3.1-8b-instant', sttModel: 'whisper-large-v3-turbo', micLabel: '', micCompat: false,
 };
 let aiMode = 'ok';
+const logLines = [];
 let googleOn = false;
 let googleExpired = false;
 let spotifyOn = false;
@@ -99,6 +100,10 @@ function fakeIpc() {
     if (mediaError) return { ok: false, error: mediaError };
     return { ok: true, message: req.action === 'now' ? 'Está tocando: Pais e Filhos, de Legião Urbana.' : '' };
   });
+  ipcMain.handle('log:write', (_e, kind, text) => { logLines.push(`[${kind}] ${text}`); });
+  ipcMain.handle('log:tail', () => logLines.slice(-40).join('\n'));
+  ipcMain.handle('log:clear', () => { logLines.length = 0; return true; });
+  ipcMain.handle('log:folder', () => {});
   ipcMain.handle('ai:cancel', () => {});
   ipcMain.handle('ai:ask', async (e, req) => {
     asked.push({ q: req.question, hist: req.history?.length ?? 0 });
@@ -178,6 +183,7 @@ app.whenReady().then(async () => {
   await sleep(2200);
   check('fala sem o nome é ignorada', heard.length === 1 && asked.length === 0 && (await state(win)) === 'idle', `heard=${heard.length} asked=${asked.length}`);
   const endLatency = heard[0].at - endedAt;
+  check('sem o nome, ele avisa de leve o que ouviu', /Ouvi: "Que horas são\?".*comece com "Jarvis"/.test(await noticeText(win)), await noticeText(win));
   check('fim da frase detectado em menos de 1 s', endLatency < 1000, `${endLatency} ms`);
   check('envio sem silêncio sobrando (WAV 16 kHz curto)', heard[0].mime === 'audio/wav' && heard[0].bytes < 70000, `${heard[0].bytes} bytes`);
 
@@ -257,6 +263,27 @@ app.whenReady().then(async () => {
   await settle();
   check('pausa no meio da frase: juntou as duas partes', asked.at(-1)?.q === 'qual é a capital da Alemanha?', JSON.stringify(asked.at(-1)));
 
+  // ---- falou enquanto ele pensava: é a continuação da pergunta, não uma pergunta nova ----
+  sttScript.push('Jarvis, qual é o próximo jogo');
+  sttScript.push('do Flamengo?');
+  await js(win, 'void window.__say(1000)');
+  check('o Jarvis começa a pensar na primeira parte', await waitState('thinking', 12000));
+  await js(win, 'void window.__say(800)');             // você continua a frase enquanto ele pensa
+  await sleep(3500);
+  await settle();
+  check('continuação enquanto pensa: a pergunta sai inteira', asked.at(-1)?.q === 'qual é o próximo jogo do Flamengo?', JSON.stringify(asked.slice(-2)));
+
+  // ---- cortou o Jarvis pensando e não deu para entender: ele refaz a pergunta, não fica mudo ----
+  sttScript.push('Jarvis, que dia é hoje');
+  sttScript.push({ error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' });
+  const askedRetry = asked.length;
+  await js(win, 'void window.__say(1000)');
+  check('pensando de novo', await waitState('thinking', 12000));
+  await js(win, 'void window.__say(800)');             // ruído ou fala que o Whisper não entende
+  await sleep(3500);
+  await settle();
+  check('corte sem palavras: ele refaz a pergunta guardada', asked.length - askedRetry === 2 && asked.at(-1)?.q === 'que dia é hoje', JSON.stringify(asked.slice(-3)));
+
   // ---- não entendeu na conversa: pede para repetir ----
   const spokenB3 = spoken.length;
   sttScript.push({ error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' });
@@ -312,6 +339,7 @@ app.whenReady().then(async () => {
   await speakAndWait(1200, 1500);
   await settle();
   check('erro da IA aparece como aviso e volta ao repouso', /chave do Groq foi recusada/.test(await noticeText(win)) && (await state(win)) === 'idle', `${await state(win)} | ${await noticeText(win)}`);
+  check('e o Jarvis também FALA o erro, em vez de ficar em silêncio', spoken.some((t) => /problema com a chave do Groq/.test(t)), JSON.stringify(spoken.slice(-3)));
   aiMode = 'ok';
 
   // ---- Ajustes ----
@@ -331,6 +359,17 @@ app.whenReady().then(async () => {
   const micMsg = await js(win, "document.querySelector('#mic-msg').textContent");
   check('teste do microfone informa o nível medido', /Funcionando.*nível máximo \d+%/.test(micMsg), micMsg);
   await shot(win, '4-ajustes');
+  await click(win, '#settings-close');
+  await sleep(300);
+
+  // ---- Diagnóstico nos Ajustes ----
+  await click(win, '#btn-settings');
+  await sleep(500);
+  const diag = await js(win, "document.querySelector('#diag-log').value");
+  check('Diagnóstico mostra o que foi ouvido e ignorado', /\[ouvi\] ignorado \(sem "Jarvis"\): "Que horas são\?"/.test(diag) && /\[ouvi\] comando: "como está o tempo em Natal\?"/.test(diag) && /interrompido/.test(diag), diag.split('\n').slice(0, 3).join(' | '));
+  await click(win, '#btn-diag-clear');
+  await sleep(300);
+  check('Limpar esvazia o diagnóstico', /Nada registrado/.test(await js(win, "document.querySelector('#diag-log').value")));
   await click(win, '#settings-close');
   await sleep(300);
 

@@ -8,6 +8,8 @@ const { createTools } = require('../src/tools');
 
 const sse = (delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
 const requests = [];
+let strict = true;      // a API de verdade recusa histórico com chamadas de ferramenta sem a lista de ferramentas
+let hang = null;        // (body) => true para nunca responder
 let script = () => null;   // (body, n) => { content?, calls?: [{name, args}], status?, json? }
 
 function groq(req, res) {
@@ -17,6 +19,11 @@ function groq(req, res) {
     const url = new URL(req.url, 'http://x');
     const body = raw ? JSON.parse(raw) : {};
     requests.push({ path: url.pathname, body });
+    if (strict && body.messages?.some((m) => m.role === 'tool' || m.tool_calls) && !body.tools) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: "'tools' must be defined when messages contain tool calls", code: 'invalid_request_error' } }));
+    }
+    if (hang && body.stream && hang(body)) return;   // nunca responde
     const step = script(body, requests.length) ?? { content: 'ok' };
     if (step.status) { res.writeHead(step.status, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(step.json ?? {})); }
     if (!body.stream) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ choices: [{ message: { content: step.content } }] })); }
@@ -142,19 +149,50 @@ const lastTool = (b) => b.messages.filter((m) => m.role === 'tool').at(-1)?.cont
 
   // ---- modelo monta a chamada errado (400 tool_use_failed): repete sem ferramentas ----
   requests.length = 0;
-  script = (b) => (b.tools ? { status: 400, json: { error: { message: 'Failed to call a function.', code: 'tool_use_failed' } } } : { content: 'Posso ajudar sim.' });
+  script = (b) => (b.tool_choice === 'auto' ? { status: 400, json: { error: { message: 'Failed to call a function.', code: 'tool_use_failed' } } } : { content: 'Posso ajudar sim.' });
   r = await ask('Me ajuda?');
   assert.strictEqual(requests.length, 2);
-  assert.ok(requests[0].body.tools && !requests[1].body.tools);
+  assert.ok(requests[0].body.tools && requests[0].body.tool_choice === 'auto');
+  assert.ok(requests[1].body.tools && requests[1].body.tool_choice === 'none', 'sem poder chamar ferramentas, mas com a lista (a API exige)');
   assert.strictEqual(r.text, 'Posso ajudar sim.');
 
   // ---- modelo preso em ferramentas: depois de 4 voltas é forçado a responder ----
   requests.length = 0;
-  script = (b) => (b.tools ? { calls: [{ name: 'tarefas_listar', args: {} }] } : { content: 'Chega de ferramentas, aqui está.' });
+  script = (b) => (b.tool_choice === 'auto' ? { calls: [{ name: 'tarefas_listar', args: {} }] } : { content: 'Chega de ferramentas, aqui está.' });
   r = await ask('Lista tarefas sem parar');
   assert.ok(requests.length <= 7, `muitas chamadas: ${requests.length}`);
   assert.strictEqual(r.text, 'Chega de ferramentas, aqui está.');
-  assert.ok(!requests.at(-1).body.tools);
+  assert.strictEqual(requests.at(-1).body.tool_choice, 'none');
+
+  // ---- erro de ferramenta numa API estrita: a volta de recuperação é válida e o Jarvis responde ----
+  script = (b) => {
+    if (b.tool_choice === 'auto' && !hasToolResult(b)) return { calls: [{ name: 'tarefas_listar', args: {} }] };
+    if (b.tool_choice === 'auto') return { status: 400, json: { error: { message: 'Failed to call a function.', code: 'tool_use_failed' } } };
+    return { content: 'Não consegui consultar agora.' };
+  };
+  r = await ask('Quais são minhas tarefas?');
+  assert.strictEqual(r.text, 'Não consegui consultar agora.');
+  assert.ok(!r.error);
+
+  // ---- ferramenta lenta: o Jarvis avisa em voz alta que ainda está trabalhando ----
+  const slow = createTools({
+    google: { ...fakeGoogle, listTasks: () => new Promise((res) => setTimeout(() => res([{ id: 't1', title: 'Pagar a luz', due: '', notes: '' }]), 260)) },
+    web: null, isGoogleConnected: () => true, settings: () => ({ webSearch: false }),
+  });
+  script = (b) => (hasToolResult(b) ? { content: 'Tem uma tarefa: pagar a luz.' } : { content: 'Deixa eu ver. ', calls: [{ name: 'tarefas_listar', args: {} }] });
+  r = await ask('Minhas tarefas?', { tools: slow, fillerMs: 70 });
+  assert.deepStrictEqual(r.spoken.filter((t) => /instante|procurando/.test(t)), ['Só mais um instante.', 'Ainda estou procurando, só mais um pouquinho.'], 'avisa enquanto a ferramenta demora, em dois momentos');
+  assert.strictEqual(r.spoken.at(-1), 'Tem uma tarefa: pagar a luz.');
+  const fast = await ask('Minhas tarefas?', { fillerMs: 5000 });
+  assert.ok(!fast.spoken.some((t) => /instante/.test(t)), 'ferramenta rápida não precisa de aviso');
+
+  // ---- volta de conversa que trava: vira erro claro em vez de silêncio ----
+  hang = () => true;
+  const t0 = Date.now();
+  r = await ask('Alguém aí?', { turnTimeoutMs: 150 });
+  assert.match(r.error, /demorou demais/);
+  assert.ok(Date.now() - t0 < 2000);
+  hang = null;
 
   // ---- busca na internet (Compound, sem streaming) ----
   requests.length = 0;
