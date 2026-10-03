@@ -39,14 +39,15 @@ src/tts.js        síntese edge-tts, cache em disco, timeout, lista de vozes pt-
 src/feeds.js      clima, busca de cidade, notícias RSS (decodifica ISO-8859-1)
 src/compat.js     modo de compatibilidade do microfone (desliga o sandbox de áudio do Chromium)
 src/ai.js         perguntas à IA (Groq, streaming), ciclo de ferramentas, busca na internet (Compound), chave cifrada, divisão em frases
-src/tools.js      ferramentas da IA (agenda, tarefas, busca; Spotify depois): definições, execução e resultados em texto
+src/tools.js      ferramentas da IA (agenda, tarefas, busca, Spotify): definições, execução e resultados em texto
+src/spotify.js    Spotify: login PKCE, busca, tocar, pausar, pular, volume, o que está tocando, e as 2 ferramentas da IA
 src/google.js     Google Agenda e Tarefas: login, renovação do token, eventos e tarefas
 src/oauth.js      login OAuth de desktop (navegador do sistema + retorno em 127.0.0.1 + PKCE), serve ao Google e ao Spotify
 src/secrets.js    cofre de segredos cifrado com safeStorage (tokens e credenciais), um arquivo .bin por item
-scripts/          test-ai.js, test-google.js (Google falso), test-tools.js (Groq falso com ferramentas), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
+scripts/          test-ai.js, test-google.js (Google falso), test-spotify.js (Spotify falso), test-tools.js (Groq falso com ferramentas), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
 renderer/
   mic.js          microfone sempre aberto: segmenta frases por silêncio (pré-roll 400 ms), entrega WAV 16 kHz, escolhe o dispositivo, mensagens de erro
-  wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) no começo ou no fim da frase; frases curtas ("para", "obrigado")
+  wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) no começo ou no fim da frase; frases curtas ("para", "obrigado"); comandos de música ("pausa", "próxima", "volume 40")
   index.html      estrutura + CSP + drawer de Ajustes
   styles.css      tokens, layout em grid, drawer
   app.js          orquestração: estados, relógio, clima, notícias, resumo, Ajustes
@@ -66,7 +67,7 @@ npm run dist       # gera dist/Jarvis Setup x.y.z.exe
 
 Atalhos no app: F11 tela cheia, Esc fecha Ajustes ou sai da tela cheia, Ctrl+, abre Ajustes, Ctrl+M liga/desliga a escuta (não existe mais caixa de digitar nem legenda: o Jarvis é só por voz), Esc fecha Ajustes ou para a fala.
 
-Testes: `node scripts/test-ai.js`, `test-google.js`, `test-tools.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
+Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-tools.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
 
 ## Arquitetura e decisões que não devem ser desfeitas sem motivo
 
@@ -76,7 +77,7 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-tools.js` e `node scr
 
 **Settings validados no processo principal** (`sanitize` em `src/settings.js`): faixas limitadas, voz validada por regex, só URLs `http(s)` nos feeds, cidade com coordenadas válidas. Todo campo novo precisa entrar no `DEFAULTS` e no `sanitize`.
 
-**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `news:get`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`. Novo canal = handler em `main.js` + método no `preload.js`.
+**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `news:get`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`, `spotify:status`, `spotify:connect`, `spotify:disconnect`, `media:control`. Novo canal = handler em `main.js` + método no `preload.js`.
 
 **Por que a voz roda no processo principal.** Desde a v1.4.0 o edge-tts exige um header de WebSocket que navegadores não permitem. Só Node funciona. O main devolve um `Buffer` MP3 por IPC e o renderer toca num `<audio>`.
 
@@ -97,6 +98,8 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-tools.js` e `node scr
 **Ferramentas da IA (`src/tools.js` + `ask` em `src/ai.js`).** `ask` é um ciclo: o modelo responde em streaming e, se pedir uma ferramenta (`tool_calls` chegam em pedaços, por índice), o main executa, devolve o resultado como texto (`role: tool`) e o modelo responde de novo (máx. 4 voltas, depois é forçado a responder). Sem ferramenta a resposta sai em streaming como sempre, sem atraso extra. Só vão ao modelo as ferramentas que estão disponíveis agora (`definitions()`: Google só se conectado, busca só se `webSearch`), e o prompt diz o que o Jarvis consegue fazer e a data/hora de agora em ISO para ele resolver "amanhã", "sexta". Uma frase dita antes da ferramenta ("Deixa eu ver.") é falada normalmente. Erros de ferramenta viram texto (`Não deu certo: ...`), nunca lançam. Se o modelo monta a chamada errada (`tool_use_failed`), repete sem ferramentas. Apagar/mudar compromisso exige `agenda_listar` antes (ids) e o prompt manda perguntar se houver dúvida.
 
 **Google Agenda e Tarefas (`src/google.js`).** OAuth de app de desktop (Google aceita porta aleatória em 127.0.0.1; exige `client_secret` mesmo com PKCE; `access_type=offline&prompt=consent`). Escopos: `calendar.events` e `tasks`. Credenciais (ID e chave do cliente) e tokens ficam cifrados em `google.bin`, colados pelo Axl nos Ajustes (nunca voltam ao renderer). **Armadilha:** com o app em "Teste" no Google Cloud o refresh token expira em 7 dias; o Axl precisa clicar em "Publicar app" (aparece o aviso de app não verificado, é o app dele). `invalid_grant` marca `needsReconnect` e a mensagem manda reconectar. A agenda só olha o calendário principal. O painel "Hoje na agenda" (coluna esquerda) e o resumo falado usam `agenda:today`.
+
+**Spotify (`src/spotify.js`).** Controla o app do Spotify do PC pela Web API (o Axl tem Premium e precisa deixar o app aberto). OAuth PKCE sem chave secreta, **porta fixa 8898** (`http://127.0.0.1:8898/callback` registrada no painel; o Spotify exige a porta idêntica). Regras de 2026 (por busca, a página oficial estava bloqueada): controlar a reprodução exige Premium e o app de desenvolvedor só funciona enquanto o dono tiver Premium; modo desenvolvimento = 1 app por desenvolvedor e até 5 usuários cadastrados (o e-mail do Axl precisa estar em User Management); busca limitada a 10 resultados (usamos 5). Dispositivo: o ativo, senão o tipo `Computer`, senão o primeiro; sem nenhum, a mensagem manda abrir o Spotify. Duas ferramentas da IA (`spotify_tocar`, `spotify_controlar`) e um caminho rápido **sem IA** (`classifyMedia` em `wake.js` + `media:control`): "pausa", "continua a música", "próxima", "anterior", "volume 40", "aumenta o volume", "que música é essa?". A música é o retorno, então esses comandos ficam em silêncio; só erro e "que música é essa" falam. "Para" sozinho continua sendo calar o Jarvis; "volta a música" é faixa anterior. Não implementado: baixar o volume da música enquanto o Jarvis fala (ducking), e com música nas caixas o microfone transcreve a letra (gasta cota do Whisper, limite local de 10/min).
 
 **Busca na internet.** Ferramenta `pesquisar_na_internet` chama o modelo `groq/compound-mini` (busca embutida, mesma chave; limite gratuito por busca: 30 req/min e 250/dia, mas a página oficial estava bloqueada no ambiente: confirmar se o plano gratuito permite a ferramenta de busca, que é cobrada em planos pagos). Se o modelo não existir, descobre outro `compound` da conta e grava em `webModel`; se não houver, devolve que a busca não está disponível. Opção `webSearch` nos Ajustes.
 
@@ -128,6 +131,7 @@ Testado (Electron 44 em Linux com display virtual, harness com IPC simulado e `c
 6. Desempenho real na GPU integrada (o teste usou renderização por software).
 7. Como a voz pronuncia "Axl" (campo `userNameSpoken` existe para corrigir).
 8. Chamada real ao Groq (só testada contra servidor falso), `safeStorage` no Windows e o ID do modelo padrão.
+11. Login real do Spotify, endpoints de player no modo desenvolvimento de 2026 (assumidos, não conferidos) e o app aberto no PC.
 10. Login real do Google (OAuth, publicar o app, aviso de não verificado), a Calendar API e a Tasks API de verdade, e a busca `groq/compound-mini` no plano gratuito.
 9. Microfone real no Windows (o Intel Smart Sound do notebook do Axl falha no Chromium; `micCompat` é a aposta, ainda não confirmada): permissão de privacidade, qualidade da gravação, limiar de silêncio e `multipart` contra o Whisper de verdade. O harness usa o microfone falso do Chromium (bipes).
 

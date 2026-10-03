@@ -48,3 +48,47 @@ export function classifyShort(command) {
   if (STOP_WORDS.test(k)) return 'stop';
   return null;
 }
+
+// ---------- comandos de música (Spotify) que não precisam da IA ----------
+const UNITS = { zero: 0, um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, treze: 13, catorze: 14, quatorze: 14, quinze: 15, dezesseis: 16, dezessete: 17, dezoito: 18, dezenove: 19 };
+const TENS = { vinte: 20, trinta: 30, quarenta: 40, cinquenta: 50, sessenta: 60, setenta: 70, oitenta: 80, noventa: 90 };
+
+/** "50", "cinquenta", "vinte e cinco", "cem" -> número de 0 a 100 (ou null). */
+export function parsePtNumber(text) {
+  const k = speechKey(text).replace(/ por cento$/, '').replace(/%$/, '').trim();
+  if (/^\d{1,3}$/.test(k)) return Math.min(100, Number(k));
+  if (k === 'cem') return 100;
+  const [a, e, b] = k.split(' ');
+  if (a in TENS && (k === a || (e === 'e' && b in UNITS && UNITS[b] < 10 && UNITS[b] > 0 && !b?.includes(' ')))) return TENS[a] + (b ? UNITS[b] : 0);
+  if (k in UNITS) return UNITS[k];
+  return null;
+}
+
+const MEDIA = [
+  ['pause', /^(pausa|pausar|pause|pausa a musica|pausar a musica|pausa o som|para a musica|pare a musica|parar a musica|para o som|silencia a musica)( por favor)?$/],
+  ['resume', /^(retoma|retomar|continua|continuar|continue|solta|bota|coloca)( a| o)? ?(musica|som|tocar|tocando)( de novo)?( por favor)?$|^(despausa|despausar|toca de novo|volta a tocar|voltar a tocar)( por favor)?$/],
+  ['next', /^(proxima|a proxima|proxima musica|proxima faixa|pula|pular|pula a musica|pular a musica|troca de musica|muda de musica|passa a musica)( por favor)?$/],
+  ['previous', /^(anterior|a anterior|musica anterior|faixa anterior|volta a musica|voltar a musica|toca a anterior)( por favor)?$/],
+  ['louder', /^(aumenta|aumentar|sobe|subir|mais alto|mais volume|volume mais alto)( o)?( volume| som)?( por favor)?$|^(aumenta|aumentar|sobe|subir) o (volume|som)( por favor)?$/],
+  ['quieter', /^(abaixa|abaixar|diminui|diminuir|baixa|baixar|reduz|reduzir|mais baixo|menos volume|volume mais baixo)( o)?( volume| som)?( por favor)?$|^(abaixa|abaixar|diminui|diminuir|baixa|baixar|reduz|reduzir) o (volume|som)( por favor)?$/],
+  ['now', /^(que musica e essa|qual musica e essa|qual e essa musica|o que esta tocando|que musica esta tocando|qual a musica)$/],
+];
+const VOLUME = /^(?:(?:coloca|bota|poe|ajusta|muda|deixa) o )?volume (?:(?:em|para|pra|no|a|na) )?(.+)$/;
+
+/**
+ * Comandos de música que valem sem IA. Devolve { action, value? } ou null.
+ * Ações: pause, resume, next, previous, volume (value 0..100), louder, quieter, now.
+ */
+export function classifyMedia(command) {
+  const k = speechKey(command);
+  if (!k) return null;
+  for (const [action, re] of MEDIA) if (re.test(k)) return { action };
+  const v = VOLUME.exec(k);
+  if (v) {
+    if (/^(maximo|no maximo|o maximo)$/.test(v[1])) return { action: 'volume', value: 100 };
+    if (/^(minimo|no minimo|o minimo|zero)$/.test(v[1])) return { action: 'volume', value: 0 };
+    const n = parsePtNumber(v[1]);
+    if (n != null) return { action: 'volume', value: n };
+  }
+  return null;
+}

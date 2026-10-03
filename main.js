@@ -7,6 +7,7 @@ const feeds = require('./src/feeds');
 const ai = require('./src/ai');
 const secrets = require('./src/secrets');
 const google = require('./src/google');
+const spotify = require('./src/spotify');
 const { createTools } = require('./src/tools');
 const { applyMicCompat } = require('./src/compat');
 
@@ -63,10 +64,13 @@ async function boot() {
   ai.init(app.getPath('userData'));
   secrets.init(app.getPath('userData'), safeStorage);
   google.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
+  spotify.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
   tools = createTools({
     google,
     web: (q, ctx) => ai.webSearch(q, { settings: settings.get(), signal: ctx?.signal, onSetting: (k, v) => settings.update({ [k]: v }) }),
     isGoogleConnected: () => google.status().connected,
+    spotify: { definitions: spotify.definitions, handlers: spotify.handlers },
+    isSpotifyConnected: () => spotify.status().connected,
     settings: () => settings.get(),
   });
   applyAutostart(settings.get());
@@ -144,6 +148,16 @@ function registerIpc() {
   });
   ipcMain.handle('google:disconnect', async () => ({ ok: true, ...(await google.disconnect()) }));
   ipcMain.handle('agenda:today', () => google.today());
+  ipcMain.handle('spotify:status', () => spotify.status());
+  ipcMain.handle('spotify:connect', async (_e, creds) => {
+    try { return { ok: true, ...(await spotify.connect(creds || {})) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('spotify:disconnect', async () => ({ ok: true, ...(await spotify.disconnect()) }));
+  ipcMain.handle('media:control', async (_e, req) => {
+    const allowed = ['pause', 'resume', 'next', 'previous', 'volume', 'louder', 'quieter', 'now'];
+    if (!req || !allowed.includes(req.action)) return { ok: false, error: 'Comando de música desconhecido.' };
+    try { return { ok: true, message: await spotify.control(req.action, req.value) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
   ipcMain.handle('stt:transcribe', async (_e, req) => {
     const reply = await ai.transcribe(req || {}, { settings: settings.get() });
     if (reply.model && reply.model !== settings.get().sttModel) settings.update({ sttModel: reply.model });

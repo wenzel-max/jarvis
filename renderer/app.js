@@ -1,7 +1,7 @@
 import { Orb } from './orb.js';
 import { Voice } from './voice.js';
 import { Mic, micErrorMessage, explainNoSpeech, listMicrophones, cleanLabel } from './mic.js';
-import { parseCommand, classifyShort } from './wake.js';
+import { parseCommand, classifyShort, classifyMedia } from './wake.js';
 import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -22,6 +22,7 @@ let settings = await api.getSettings();
 let chat = [];            // últimas perguntas e respostas, para a IA entender "e amanhã?"
 let weather = null;
 let agenda = null;
+let spotifyOn = false;   // Spotify conectado: ativa os comandos de música sem IA
 let news = [];
 let speakId = 0;
 let statusNote = '';
@@ -451,6 +452,15 @@ async function handleSegment(seg) {
     openFollowUp();
     return;
   }
+  // "pausa", "próxima", "volume 40": direto no Spotify, sem esperar a IA. A música é o retorno; só erros e "que música é essa" falam.
+  const media = spotifyOn ? classifyMedia(command) : null;
+  if (media) {
+    const r = await api.mediaControl(media.action, media.value);
+    const said = r.ok ? r.message : r.error;
+    if (said) await speak([said]);
+    openFollowUp();
+    return;
+  }
   if (await ask(command)) openFollowUp();
 }
 
@@ -619,9 +629,24 @@ async function refreshGoogleStatus() {
   return s;
 }
 
+async function refreshSpotifyStatus() {
+  const s = await api.spotifyStatus();
+  spotifyOn = s.connected;
+  $('#spotify-redirect').textContent = s.redirectUri;
+  $('#spotify-status').textContent = s.connected
+    ? 'Conectado. Peça: "Jarvis, toca Legião Urbana", ou diga "pausa", "próxima", "volume 40".'
+    : s.needsReconnect
+      ? 'O acesso expirou. Conecte de novo para voltar a usar o Spotify.'
+      : 'Não conectado. Siga os passos abaixo e cole o Client ID para conectar.';
+  $('#btn-s-disconnect').hidden = !s.connected && !s.needsReconnect;
+  $('#btn-s-connect').textContent = s.connected ? 'Conectar de novo' : 'Conectar com o Spotify';
+  return s;
+}
+
 function openSettings() {
   fillSettings();
   refreshGoogleStatus();
+  refreshSpotifyStatus();
   refreshMicList();
   drawer.hidden = false;
   $('#settings-close').focus();
@@ -740,6 +765,25 @@ function bindSettings() {
     renderAgenda();
     refreshGoogleStatus();
   });
+  $('#btn-s-connect').addEventListener('click', async () => {
+    const msg = $('#spotify-msg');
+    const btn = $('#btn-s-connect');
+    const clientId = $('#set-s-id').value.trim();
+    msg.hidden = false;
+    if (!clientId) { msg.textContent = 'Cole o Client ID do seu app do Spotify.'; return; }
+    btn.disabled = true;
+    msg.textContent = 'Abrindo o navegador para você entrar no Spotify…';
+    const r = await api.spotifyConnect({ clientId });
+    btn.disabled = false;
+    msg.textContent = r.ok ? 'Conectado!' : r.error;
+    if (r.ok) $('#set-s-id').value = '';
+    refreshSpotifyStatus();
+  });
+  $('#btn-s-disconnect').addEventListener('click', async () => {
+    await api.spotifyDisconnect();
+    $('#spotify-msg').hidden = true;
+    refreshSpotifyStatus();
+  });
   $('#set-websearch').addEventListener('change', (e) => save({ webSearch: e.target.checked }));
   $('#set-bargein').addEventListener('change', (e) => { save({ bargeIn: e.target.checked }); mic.bargeIn = e.target.checked; });
   $('#set-listen').addEventListener('change', (e) => {
@@ -826,6 +870,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 tick();
+refreshSpotifyStatus().catch(() => {});
 firstLoad = Promise.all([
   loop('weather', loadWeather, 15 * 60e3, 2 * 60e3),
   loop('news', loadNews, 20 * 60e3, 2 * 60e3),

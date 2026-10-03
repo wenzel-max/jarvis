@@ -18,6 +18,9 @@ const settings = {
 };
 let aiMode = 'ok';
 let googleOn = false;
+let spotifyOn = false;
+let mediaError = '';
+const mediaCalls = [];
 const googleCalls = [];
 const asked = [];     // perguntas que chegaram à IA
 const heard = [];     // trechos de áudio enviados para transcrição { bytes, mime, at }
@@ -82,6 +85,18 @@ function fakeIpc() {
       ],
       tasks: [{ id: 't1', title: 'Comprar pão' }, { id: 't2', title: 'Pagar a luz' }],
     };
+  });
+  ipcMain.handle('spotify:status', () => ({ hasCredentials: spotifyOn, connected: spotifyOn, needsReconnect: false, redirectUri: 'http://127.0.0.1:8898/callback' }));
+  ipcMain.handle('spotify:connect', (_e, creds) => {
+    if (!/^[a-f0-9]{32}$/i.test(creds?.clientId ?? '')) return { ok: false, error: 'O ID do cliente parece errado. Ele tem 32 letras e números.' };
+    spotifyOn = true;
+    return { ok: true, connected: true, redirectUri: 'http://127.0.0.1:8898/callback' };
+  });
+  ipcMain.handle('spotify:disconnect', () => { spotifyOn = false; return { ok: true, connected: false, redirectUri: 'http://127.0.0.1:8898/callback' }; });
+  ipcMain.handle('media:control', (_e, req) => {
+    mediaCalls.push(req);
+    if (mediaError) return { ok: false, error: mediaError };
+    return { ok: true, message: req.action === 'now' ? 'Está tocando: Pais e Filhos, de Legião Urbana.' : '' };
   });
   ipcMain.handle('ai:cancel', () => {});
   ipcMain.handle('ai:ask', async (e, req) => {
@@ -348,6 +363,63 @@ app.whenReady().then(async () => {
   await click(win, '#btn-g-disconnect');
   await sleep(500);
   check('desconectar esconde o painel', !googleOn && await js(win, "document.querySelector('#agenda').hidden"));
+  await click(win, '#settings-close');
+  await sleep(300);
+
+  // ---- Spotify ----
+  // sem Spotify conectado, "pausa" é uma conversa comum e vai para a IA
+  sttScript.push('Jarvis, pausa');
+  await speakAndWait(1000, 1500);
+  await settle();
+  check('sem Spotify, "pausa" vai para a IA', asked.at(-1)?.q === 'pausa' && mediaCalls.length === 0, JSON.stringify(asked.at(-1)));
+  await click(win, '#btn-settings');
+  await sleep(400);
+  check('Ajustes mostra a porta de retorno do Spotify', /127\.0\.0\.1:8898\/callback/.test(await js(win, "document.querySelector('#spotify-redirect').textContent")));
+  await js(win, "document.querySelector('#set-s-id').value = 'curto'");
+  await click(win, '#btn-s-connect');
+  await sleep(400);
+  check('Client ID errado mostra o erro', /ID do cliente parece errado/.test(await js(win, "document.querySelector('#spotify-msg').textContent")) && !spotifyOn);
+  await js(win, "document.querySelector('#set-s-id').value = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'");
+  await click(win, '#btn-s-connect');
+  await sleep(700);
+  check('conecta o Spotify e mostra os comandos', spotifyOn && /Conectado\. Peça/.test(await js(win, "document.querySelector('#spotify-status').textContent")));
+  await shot(win, '7-spotify-ajustes');
+  await click(win, '#settings-close');
+  await sleep(300);
+
+  const askedS = asked.length, spokenS = spoken.length;
+  sttScript.push('Jarvis, pausa');
+  await speakAndWait(1000, 1500);
+  await settle();
+  check('"pausa" vai direto ao Spotify, sem IA e sem falar', mediaCalls.at(-1)?.action === 'pause' && asked.length === askedS && spoken.length === spokenS, JSON.stringify(mediaCalls.at(-1)));
+  sttScript.push('Jarvis, volume 40');
+  await speakAndWait(1000, 1500);
+  await settle();
+  check('"volume 40" -> volume 40', mediaCalls.at(-1)?.action === 'volume' && mediaCalls.at(-1)?.value === 40, JSON.stringify(mediaCalls.at(-1)));
+  sttScript.push('Próxima');                          // dentro da conversa, sem dizer o nome
+  await speakAndWait(900, 1500);
+  await settle();
+  check('"próxima" sem o nome, dentro da conversa', mediaCalls.at(-1)?.action === 'next', JSON.stringify(mediaCalls.at(-1)));
+  sttScript.push('Jarvis, que música é essa?');
+  await speakAndWait(1200, 1500);
+  await settle();
+  check('"que música é essa?" fala a resposta do Spotify', spoken.slice(spokenS).some((t) => /Pais e Filhos/.test(t)) && asked.length === askedS, JSON.stringify(spoken.slice(spokenS)));
+  mediaError = 'Não encontrei o Spotify aberto. Abra o aplicativo do Spotify no computador e tente de novo.';
+  const spokenE = spoken.length;
+  sttScript.push('Jarvis, aumenta o volume');
+  await speakAndWait(1200, 1500);
+  await settle();
+  check('erro do Spotify é falado, não fica mudo', spoken.slice(spokenE).some((t) => /Abra o aplicativo do Spotify/.test(t)), JSON.stringify(spoken.slice(spokenE)));
+  mediaError = '';
+  sttScript.push('Jarvis, toca Legião Urbana');
+  await speakAndWait(1400, 1500);
+  await settle();
+  check('"toca Legião Urbana" vai para a IA (que usa a ferramenta)', asked.at(-1)?.q === 'toca Legião Urbana', JSON.stringify(asked.at(-1)));
+  await click(win, '#btn-settings');
+  await sleep(300);
+  await click(win, '#btn-s-disconnect');
+  await sleep(500);
+  check('desconectar o Spotify volta "pausa" para a IA', !spotifyOn && /Não conectado/.test(await js(win, "document.querySelector('#spotify-status').textContent")));
   await click(win, '#settings-close');
   await sleep(300);
 

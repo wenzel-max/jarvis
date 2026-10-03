@@ -1,6 +1,6 @@
 // Testa a palavra de ativação ("Jarvis") sem rede nem Electron.
 import assert from 'node:assert';
-import { parseCommand, classifyShort, speechKey } from '../renderer/wake.js';
+import { parseCommand, classifyShort, speechKey, classifyMedia, parsePtNumber } from '../renderer/wake.js';
 
 const casos = [
   ['Jarvis, que horas são?', true, 'que horas são?'],
@@ -36,4 +36,22 @@ const curtas = [
 ];
 for (const [texto, esperado] of curtas) assert.strictEqual(classifyShort(texto), esperado, `"${texto}"`);
 assert.strictEqual(speechKey('  Olá, Jarvis!  Tá?'), 'ola jarvis ta');
-console.log(`ativação: ${casos.length} casos OK; frases curtas: ${curtas.length} casos OK`);
+
+const nums = [['50', 50], ['100', 100], ['250', 100], ['cem', 100], ['cinquenta', 50], ['vinte e cinco', 25], ['trinta e um', 31], ['quinze', 15], ['zero', 0], ['oitenta por cento', 80], ['40%', 40], ['sei la', null], ['vinte e', null], ['vinte e dez', null]];
+for (const [t, n] of nums) assert.strictEqual(parsePtNumber(t), n, `número "${t}"`);
+
+const media = [
+  ['Pausa', 'pause'], ['Pausar a música.', 'pause'], ['Para a música!', 'pause'], ['pausa o som por favor', 'pause'],
+  ['Continua a música', 'resume'], ['retoma', null], ['retoma a música', 'resume'], ['Volta a tocar', 'resume'], ['despausa', 'resume'],
+  ['Próxima', 'next'], ['Pula a música', 'next'], ['próxima música', 'next'], ['troca de música', 'next'],
+  ['Anterior', 'previous'], ['volta a música', 'previous'], ['música anterior', 'previous'],
+  ['Aumenta o volume', 'louder'], ['mais alto', 'louder'], ['sobe o volume', 'louder'],
+  ['Abaixa o volume.', 'quieter'], ['diminui o som', 'quieter'], ['mais baixo', 'quieter'],
+  ['Que música é essa?', 'now'], ['O que está tocando?', 'now'],
+  ['Para!', null], ['Para de falar', null], ['Que horas são?', null], ['Toca Legião Urbana', null], ['Pula de alegria', null], ['Continua', null], ['', null],
+];
+for (const [t, a] of media) assert.strictEqual(classifyMedia(t)?.action ?? null, a, `mídia "${t}"`);
+const vol = [['Volume 50', 50], ['volume em 30', 30], ['coloca o volume em cinquenta', 50], ['Volume no máximo', 100], ['volume no mínimo', 0], ['bota o volume para vinte e cinco por cento', 25], ['volume 120', 100]];
+for (const [t, v] of vol) assert.deepStrictEqual(classifyMedia(t), { action: 'volume', value: v }, `volume "${t}"`);
+assert.strictEqual(classifyMedia('volume bonito'), null);
+console.log(`ativação: ${casos.length} casos OK; frases curtas: ${curtas.length} casos OK; música: ${media.length + vol.length} casos OK`);

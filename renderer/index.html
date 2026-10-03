@@ -132,6 +132,30 @@
       </section>
 
       <section class="group">
+        <h3>Spotify</h3>
+        <p id="spotify-status" class="hint"></p>
+        <details class="steps">
+          <summary>Como conectar (uma vez só)</summary>
+          <ol>
+            <li>Precisa de <b>Spotify Premium</b>, e o aplicativo do Spotify <b>aberto no computador</b> quando você pedir uma música.</li>
+            <li>Entre em developer.spotify.com/dashboard e clique em <b>Create app</b> (qualquer nome e descrição).</li>
+            <li>Em <b>Redirect URI</b>, coloque exatamente: <code id="spotify-redirect">http://127.0.0.1:8898/callback</code> e adicione.</li>
+            <li>Marque <b>Web API</b>, aceite os termos e salve.</li>
+            <li>Na página do app, abra <b>Settings</b>, copie o <b>Client ID</b> e cole abaixo.</li>
+            <li>Em <b>User Management</b>, adicione o e-mail da sua conta Spotify, se ele ainda não estiver na lista.</li>
+          </ol>
+        </details>
+        <label class="field"><span>Client ID</span>
+          <input id="set-s-id" type="text" autocomplete="off" spellcheck="false" placeholder="32 letras e números">
+        </label>
+        <div class="row wrap">
+          <button id="btn-s-connect" type="button" class="btn">Conectar com o Spotify</button>
+          <button id="btn-s-disconnect" type="button" class="btn btn-quiet" hidden>Desconectar</button>
+        </div>
+        <p id="spotify-msg" class="hint" hidden></p>
+      </section>
+
+      <section class="group">
         <h3>Notícias</h3>
         <label class="field"><span>Fontes, uma por linha: Nome | endereço do feed RSS</span>
           <textarea id="set-feeds" rows="4" spellcheck="false"></textarea>
