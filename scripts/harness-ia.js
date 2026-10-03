@@ -2,6 +2,10 @@
 // Harness da interface de perguntas: Electron real, IPC simulado (sem rede), capturas em scripts/out/.
 // Uso: xvfb-run -a npx electron scripts/harness-ia.js
 const { app, BrowserWindow, ipcMain } = require('electron');
+
+// Microfone falso do Chromium (gera bipes) e permissão automática.
+app.commandLine.appendSwitch('use-fake-device-for-media-stream');
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -15,6 +19,8 @@ const settings = {
 };
 let mode = 'ok';
 const asked = [];
+const heard = [];
+let sttMode = 'ok';
 
 function fakeIpc() {
   ipcMain.handle('settings:get', () => settings);
@@ -32,6 +38,10 @@ function fakeIpc() {
   ipcMain.handle('app:quit', () => app.quit());
   ipcMain.handle('ai:key-status', () => ({ hasKey: mode !== 'nokey' }));
   ipcMain.handle('ai:key-set', (_e, k) => (k.length < 20 ? { ok: false, error: 'A chave tem formato inválido.' } : { ok: true, hasKey: true }));
+  ipcMain.handle('stt:transcribe', (_e, req) => {
+    heard.push({ bytes: req.audio?.byteLength ?? req.audio?.length ?? 0, mime: req.mime });
+    return sttMode === 'ok' ? { text: 'Que horas são?', model: 'whisper-large-v3-turbo' } : { error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' };
+  });
   ipcMain.handle('ai:cancel', () => {});
   ipcMain.handle('ai:ask', async (e, req) => {
     asked.push({ q: req.question, hist: req.history?.length ?? 0 });
@@ -111,6 +121,46 @@ app.whenReady().then(async () => {
   await js(win, "(() => { document.querySelector('#set-ai-key').value = 'curta'; document.querySelector('#btn-ai-key').click(); })()");
   await sleep(300);
   check('chave inválida mostra o erro', /formato inválido/.test(await js(win, "document.querySelector('#ai-msg').textContent")));
+
+  // 5) voz de entrada: grava com o microfone falso, termina manualmente e a pergunta segue o fluxo normal
+  await js(win, "document.querySelector('#btn-settings').click()"); // fecha os Ajustes (alterna)
+  await sleep(300);
+  mode = 'ok';
+  const before = asked.length;
+  await js(win, "document.querySelector('#ask-mic').click()");
+  await sleep(2500);
+  check('estado ouvindo com o microfone aberto', (await state(win)) === 'listening', await state(win));
+  check('botão vira "Terminei"', (await js(win, "document.querySelector('#ask-mic').textContent")) === 'Terminei');
+
+  await shot(win, '6-ouvindo');
+  await js(win, "document.querySelector('#ask-mic').click()"); // Terminei
+  for (let i = 0; i < 30 && asked.length === before; i++) await sleep(300);
+  check('áudio enviado para transcrição', heard.length === 1 && heard[0].bytes > 500 && /webm|ogg/.test(heard[0].mime), JSON.stringify(heard));
+  check('texto reconhecido virou pergunta', asked.at(-1)?.q === 'Que horas são?', JSON.stringify(asked.at(-1)));
+  for (let i = 0; i < 40 && (await state(win)) !== 'idle'; i++) await sleep(500);
+  check('botão volta a "Falar" e campo livre', (await js(win, "document.querySelector('#ask-mic').textContent")) === 'Falar' && !(await js(win, "document.querySelector('#ask-input').disabled")));
+
+  // 6) fala não entendida
+  sttMode = 'fail';
+  await js(win, "document.querySelector('#ask-mic').click()");
+  await sleep(2200);
+  await js(win, "document.querySelector('#ask-mic').click()");
+  await sleep(1200);
+  check('fala não entendida mostra aviso e volta ao repouso', /Não entendi/.test(await caption(win)) && (await state(win)) === 'idle', `${await state(win)} | ${await caption(win)}`);
+
+  // 7) cancelar com Esc durante a escuta
+  await js(win, "document.querySelector('#ask-mic').click()");
+  await sleep(1000);
+  await js(win, "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+  await sleep(700);
+  check('Esc cancela a escuta', (await state(win)) === 'idle' && (await js(win, "document.querySelector('#ask-mic').textContent")) === 'Falar' && heard.length === 2, `${await state(win)} heard=${heard.length}`);
+
+  // 8) microfone bloqueado no Windows
+  await js(win, "(() => { navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error('negado'), { name: 'NotAllowedError' })); })()");
+  await js(win, "document.querySelector('#ask-mic').click()");
+  await sleep(600);
+  check('permissão negada explica como liberar', /Windows bloqueou o microfone/.test(await caption(win)) && (await state(win)) === 'idle' && !(await js(win, "document.querySelector('#ask-input').disabled")), await caption(win));
+  await shot(win, '7-mic-bloqueado');
 
   console.log(logs.length ? `Erros no console:\n${logs.join('\n')}` : 'Sem erros no console.');
   console.log(results.every(Boolean) ? 'TUDO OK' : 'HÁ FALHAS');

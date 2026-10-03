@@ -27,6 +27,7 @@
       <p id="caption" class="caption" aria-live="polite"></p>
       <form id="ask-form" class="ask" autocomplete="off">
         <input id="ask-input" type="text" maxlength="500" placeholder="Pergunte alguma coisa ao Jarvis" aria-label="Pergunte ao Jarvis">
+        <button id="ask-mic" type="button" class="btn" title="Falar com o Jarvis (Ctrl+M)">Falar</button>
         <button id="ask-send" type="submit" class="btn">Perguntar</button>
       </form>
     </section>
@@ -108,8 +109,11 @@
           <button id="btn-ai-getkey" type="button" class="btn btn-quiet">Criar chave grátis</button>
         </div>
         <p id="ai-msg" class="hint" hidden></p>
-        <label class="field"><span>Modelo</span>
+        <label class="field"><span>Modelo das respostas</span>
           <input id="set-ai-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field"><span>Modelo que entende a sua voz</span>
+          <input id="set-stt-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
         </label>
       </section>
 

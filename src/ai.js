@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const STT_ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions';
+const MAX_AUDIO_BYTES = 5 * 1024 * 1024;   // ~15 s de fala em webm/opus tem poucas dezenas de KB
+const AUDIO_TYPES = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/mpeg': 'mp3' };
 const TOTAL_TIMEOUT_MS = 40000;
 const MIN_SENTENCE = 25;   // frases muito curtas são juntadas à seguinte
 const MAX_SENTENCE = 280;  // o edge-tts aceita 600; cortar antes evita frases gigantes
@@ -118,6 +121,19 @@ function systemPrompt({ userName, city }) {
   ].join(' ');
 }
 
+/** Traduz uma resposta de erro do Groq em mensagem em português; marca erros de modelo. */
+async function throwHttpError(res, model) {
+  if (HTTP_ERRORS[res.status]) throw new Error(HTTP_ERRORS[res.status]);
+  const { message, code } = await errorDetail(res);
+  if (res.status === 404 || /model/i.test(`${code} ${message}`)) {
+    const err = new Error(`O Groq não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
+    err.isModelError = true;
+    throw err;
+  }
+  if (res.status === 400) throw new Error(`O Groq recusou o pedido${message ? `: ${message}` : '.'}`);
+  throw new Error(`O Groq respondeu com erro ${res.status}. Tente de novo em instantes.`);
+}
+
 async function errorDetail(res) {
   try {
     const j = await res.json();
@@ -130,24 +146,29 @@ async function errorDetail(res) {
 // Modelos que não servem para conversa por texto.
 const NOT_CHAT = /whisper|tts|speech|guard|safeguard|embed|orpheus|playai|moderation/i;
 // Ordem de preferência: pequenos e rápidos primeiro (voz pede resposta ágil).
-const PREFERRED = [/llama.*8b.*instant/i, /8b/i, /instant|flash|mini/i, /llama-3\.3-70b/i, /llama/i, /./];
+const PREFERRED_CHAT = [/llama.*8b.*instant/i, /8b/i, /instant|flash|mini/i, /llama-3\.3-70b/i, /llama/i, /./];
+// Só Whisper multilíngue: os "distil-whisper" e variantes "-en" são apenas em inglês.
+const PREFERRED_STT = [/^whisper.*turbo/i, /^whisper/i];
+const STT_ENGLISH_ONLY = /distil|[-.]en$/i;
 
-/** Lista os modelos de conversa que a conta tem acesso. */
+/** Lista os IDs de modelos que a conta tem acesso. */
 async function listModels({ key, signal, endpoint = ENDPOINT }) {
-  const res = await fetch(endpoint.replace(/\/chat\/completions$/, '/models'), {
+  const res = await fetch(endpoint.replace(/\/(chat\/completions|audio\/transcriptions)$/, '/models'), {
     signal,
     headers: { Authorization: `Bearer ${key}` },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const j = await res.json();
-  return (j.data ?? []).map((m) => m.id).filter((id) => typeof id === 'string' && !NOT_CHAT.test(id)).sort();
+  return (j.data ?? []).map((m) => m.id).filter((id) => typeof id === 'string').sort();
 }
 
-/** Escolhe outro modelo da lista para substituir um que o Groq recusou. */
-async function pickModel({ key, bad, signal, endpoint }) {
+/** Escolhe outro modelo da lista para substituir um que o Groq recusou. kind: 'chat' ou 'stt'. */
+async function pickModel({ key, bad, signal, endpoint, kind = 'chat' }) {
   try {
-    const ids = (await listModels({ key, signal, endpoint })).filter((id) => id !== bad);
-    for (const re of PREFERRED) {
+    const stt = kind === 'stt';
+    const ids = (await listModels({ key, signal, endpoint }))
+      .filter((id) => id !== bad && (stt ? /^whisper/i.test(id) && !STT_ENGLISH_ONLY.test(id) : !NOT_CHAT.test(id)));
+    for (const re of stt ? PREFERRED_STT : PREFERRED_CHAT) {
       const hit = ids.find((id) => re.test(id));
       if (hit) return hit;
     }
@@ -172,17 +193,7 @@ async function streamChat({ key, model, messages, signal, onSentence, endpoint =
     if (signal.aborted) throw e;
     throw new Error('Sem conexão com o Groq. Verifique a internet.');
   }
-  if (!res.ok) {
-    if (HTTP_ERRORS[res.status]) throw new Error(HTTP_ERRORS[res.status]);
-    const { message, code } = await errorDetail(res);
-    if (res.status === 404 || /model/i.test(`${code} ${message}`)) {
-      const err = new Error(`O Groq não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
-      err.isModelError = true;
-      throw err;
-    }
-    if (res.status === 400) throw new Error(`O Groq recusou o pedido${message ? `: ${message}` : '.'}`);
-    throw new Error(`O Groq respondeu com erro ${res.status}. Tente de novo em instantes.`);
-  }
+  if (!res.ok) await throwHttpError(res, model);
 
   const sentencer = new Sentencer(onSentence);
   const decoder = new TextDecoder();
@@ -263,9 +274,66 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
   }
 }
 
+// ---------- voz de entrada (Whisper no Groq) ----------
+// O Whisper "alucina" frases de legenda quando só ouve ruído; isso não é fala do usuário.
+const HALLUCINATION = /amara\.org|legendas? (pela|por|de)|obrigad[oa] por assistir|inscreva-se|^[\s.…!?-]*$/i;
+
+async function transcribeAudio({ key, model, audio, mime, signal, endpoint = STT_ENDPOINT }) {
+  const form = new FormData();
+  form.append('file', new Blob([audio], { type: mime }), `fala.${AUDIO_TYPES[mime]}`);
+  form.append('model', model);
+  form.append('language', 'pt');
+  form.append('response_format', 'json');
+  form.append('temperature', '0');
+  let res;
+  try {
+    res = await fetch(endpoint, { method: 'POST', signal, headers: { Authorization: `Bearer ${key}` }, body: form });
+  } catch (e) {
+    if (signal.aborted) throw e;
+    throw new Error('Sem conexão com o Groq. Verifique a internet.');
+  }
+  if (!res.ok) await throwHttpError(res, model);
+  const j = await res.json();
+  return String(j.text ?? '').trim();
+}
+
+/** Entrada do IPC: devolve { text, model } ou { error }. Nunca lança. */
+async function transcribe({ audio, mime }, { settings, endpoint, key: keyOverride }) {
+  const type = typeof mime === 'string' ? mime.split(';')[0].trim().toLowerCase() : '';
+  if (!AUDIO_TYPES[type]) return { error: 'O formato do áudio gravado não é aceito.' };
+  const bytes = audio instanceof ArrayBuffer ? Buffer.from(audio) : ArrayBuffer.isView(audio) ? Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength) : null;
+  if (!bytes || !bytes.length) return { error: 'Não consegui gravar o áudio. Tente de novo.' };
+  if (bytes.length > MAX_AUDIO_BYTES) return { error: 'A gravação ficou longa demais. Fale uma frase por vez.' };
+  const key = keyOverride ?? readKey();
+  if (!key) return { error: 'Falta a chave do Groq. Cole a chave em Ajustes, na seção Inteligência artificial.' };
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    let model = settings.sttModel;
+    const run = () => transcribeAudio({ key, model, audio: bytes, mime: type, signal: ctrl.signal, endpoint });
+    let text;
+    try {
+      text = await run();
+    } catch (e) {
+      if (!e.isModelError || ctrl.signal.aborted) throw e;
+      const alt = await pickModel({ key, bad: model, signal: ctrl.signal, endpoint, kind: 'stt' });
+      if (!alt) throw e;
+      model = alt;
+      text = await run();
+    }
+    if (!text || HALLUCINATION.test(text)) return { error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' };
+    return { text, model };
+  } catch (e) {
+    return { error: ctrl.signal.aborted ? 'O Groq demorou demais para transcrever. Tente de novo.' : e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function cancel() {
   active?.abort();
   active = null;
 }
 
-module.exports = { init, hasKey, setKey, ask, cancel, streamChat, listModels, pickModel, Sentencer, cleanForSpeech };
+module.exports = { init, hasKey, setKey, ask, transcribe, cancel, streamChat, listModels, pickModel, Sentencer, cleanForSpeech };

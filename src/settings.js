@@ -14,6 +14,7 @@ const DEFAULTS = {
   speakOnStart: true,
   fullscreen: true,
   aiModel: 'llama-3.1-8b-instant',  // modelo do Groq usado nas perguntas
+  sttModel: 'whisper-large-v3-turbo', // modelo do Groq que transcreve a fala
   feeds: [
     { name: 'G1', url: 'https://g1.globo.com/rss/g1/' },
     { name: 'Folha', url: 'https://feeds.folha.uol.com.br/emcimadahora/rss091.xml' },
@@ -42,8 +43,9 @@ function sanitize(raw) {
   out.autostart = !!out.autostart;
   out.speakOnStart = !!out.speakOnStart;
   out.fullscreen = !!out.fullscreen;
-  out.aiModel = typeof out.aiModel === 'string' && /^[A-Za-z0-9._\/:-]{1,80}$/.test(out.aiModel.trim())
-    ? out.aiModel.trim() : DEFAULTS.aiModel;
+  for (const k of ['aiModel', 'sttModel']) {
+    out[k] = typeof out[k] === 'string' && /^[A-Za-z0-9._\/:-]{1,80}$/.test(out[k].trim()) ? out[k].trim() : DEFAULTS[k];
+  }
 
   const c = out.city || {};
   const lat = Number(c.lat), lon = Number(c.lon);

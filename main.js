@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session } = require('electron');
 const path = require('node:path');
 const settings = require('./src/settings');
 const tts = require('./src/tts');
@@ -38,12 +38,23 @@ function applyAutostart(s) {
   }
 }
 
+/** O app só precisa do microfone, e só para a nossa própria página local. */
+function allowMicrophoneOnly() {
+  const ours = (url) => typeof url === 'string' && url.startsWith('file://');
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const audioOnly = !details.mediaTypes || details.mediaTypes.every((t) => t === 'audio');
+    callback(permission === 'media' && audioOnly && ours(details.requestingUrl));
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, origin) => permission === 'media' && ours(origin));
+}
+
 async function boot() {
   Menu.setApplicationMenu(null);
   settings.init(app.getPath('userData'));
   tts.init(path.join(app.getPath('userData'), 'tts-cache'));
   ai.init(app.getPath('userData'));
   applyAutostart(settings.get());
+  allowMicrophoneOnly();
   registerIpc();
 
   // Aberto pelo Windows no login: espera um pouco para o boot terminar.
@@ -109,6 +120,11 @@ function registerIpc() {
       if (reply.model && reply.model !== settings.get().aiModel) settings.update({ aiModel: reply.model });
       return reply;
     });
+  });
+  ipcMain.handle('stt:transcribe', async (_e, req) => {
+    const reply = await ai.transcribe(req || {}, { settings: settings.get() });
+    if (reply.model && reply.model !== settings.get().sttModel) settings.update({ sttModel: reply.model });
+    return reply;
   });
   ipcMain.handle('ai:cancel', () => ai.cancel());
   ipcMain.handle('ai:key-status', () => ({ hasKey: ai.hasKey() }));

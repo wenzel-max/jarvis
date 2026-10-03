@@ -1,5 +1,6 @@
 import { Orb } from './orb.js';
 import { Voice } from './voice.js';
+import { Mic, micErrorMessage } from './mic.js';
 import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -27,10 +28,11 @@ let statusNote = '';
 // Esfera e voz
 // ---------------------------------------------------------------------------
 const voice = new Voice($('#voice-audio'));
+const mic = new Mic();
 let orb = null;
 try {
   orb = new Orb($('#orb'), { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches });
-  orb.onFrame = () => orb.setLevel(voice.readLevel());
+  orb.onFrame = () => orb.setLevel(hud.dataset.state === 'listening' ? mic.level : voice.readLevel());
 } catch (err) {
   console.error('[esfera] WebGL indisponível:', err);
   hud.classList.add('no-webgl');
@@ -188,11 +190,13 @@ async function speak(sentences, { startState = 'speaking' } = {}) {
 function abortAsk() {
   api.cancelAi();
   currentQueue?.end();
+  mic.cancel();
 }
 
 function stopSpeaking() {
   speakId++;
   abortAsk();
+  askInput.disabled = askSend.disabled = false;
   voice.stop();
   $('#btn-stop').hidden = true;
   setState('idle');
@@ -261,6 +265,64 @@ async function ask(question) {
     askInput.focus();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Voz de entrada
+// ---------------------------------------------------------------------------
+const micBtn = $('#ask-mic');
+
+/** Mostra uma mensagem na legenda e volta ao repouso. */
+function showNotice(text) {
+  setState('idle');
+  $('#btn-stop').hidden = true;
+  caption.textContent = text;
+}
+
+async function listen() {
+  if (mic.active) { mic.finish(); return; }   // segundo clique = terminei de falar
+  const id = ++speakId;
+  voice.stop();
+  abortAsk();
+  currentQueue = null;   // uma resposta antiga não deve reativar o campo durante a escuta
+  askInput.disabled = askSend.disabled = true;
+  micBtn.textContent = 'Terminei';
+  setState('listening');
+  caption.textContent = 'Pode falar.';
+  $('#btn-stop').hidden = false;
+
+  let heard = null;
+  let problem = null;
+  try {
+    heard = await mic.record();
+  } catch (err) {
+    console.warn('[microfone]', err);
+    problem = micErrorMessage(err);
+  }
+  micBtn.textContent = 'Falar';
+  if (id !== speakId) return;   // outra ação assumiu (parar, resumo, pergunta digitada)
+
+  if (problem || !heard) {
+    askInput.disabled = askSend.disabled = false;
+    showNotice(problem ?? 'Não ouvi nada. Aperte Falar e tente de novo.');
+    return;
+  }
+
+  setState('thinking');
+  caption.textContent = 'Entendendo…';
+  let reply;
+  try {
+    reply = await api.transcribe(heard.buffer, heard.mime);
+  } catch (err) {
+    console.warn('[voz de entrada]', err);
+    reply = { error: 'Algo deu errado ao entender a sua voz. Tente de novo.' };
+  }
+  if (id !== speakId) return;
+  askInput.disabled = askSend.disabled = false;
+  if (reply.error) { showNotice(reply.error); return; }
+  ask(reply.text);
+}
+
+micBtn.addEventListener('click', listen);
 
 $('#ask-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -356,6 +418,7 @@ function fillSettings() {
   $('#set-fullscreen').checked = settings.fullscreen;
   $('#set-delay').value = settings.startDelaySec;
   $('#set-ai-model').value = settings.aiModel;
+  $('#set-stt-model').value = settings.sttModel;
   refreshAiStatus();
 }
 
@@ -457,6 +520,10 @@ function bindSettings() {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
   });
+  $('#set-stt-model').addEventListener('change', async (e) => {
+    await save({ sttModel: e.target.value });
+    e.target.value = settings.sttModel;
+  });
   $('#set-delay').addEventListener('change', (e) => save({ startDelaySec: Number(e.target.value) }));
 
   // prévia: mostra cada estado da esfera por alguns segundos
@@ -486,8 +553,12 @@ bindSettings();
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!drawer.hidden) closeSettings();
+    if (mic.active) stopSpeaking();
+    else if (!drawer.hidden) closeSettings();
     else api.setFullscreen(false);
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'm') {
+    e.preventDefault();
+    listen();
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     askInput.focus();

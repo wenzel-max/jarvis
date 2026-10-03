@@ -2,7 +2,7 @@
 // Testa src/ai.js sem rede: servidor local que imita o streaming (SSE) da API.
 const http = require('node:http');
 const assert = require('node:assert');
-const { streamChat, ask, Sentencer, cleanForSpeech } = require('../src/ai');
+const { streamChat, ask, transcribe, Sentencer, cleanForSpeech } = require('../src/ai');
 
 const sse = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 
@@ -102,6 +102,59 @@ async function withServer(handler, fn) {
         onSentence() {}, endpoint: `${base}/openai/v1/chat/completions`, key: 'gsk_teste',
       });
       assert.match(reply.error, /recusou o pedido: max_tokens inválido/);
+    });
+  }
+
+  // ---------- voz de entrada ----------
+  {
+    const settings = { sttModel: 'whisper-large-v3-turbo' };
+    const audio = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const seen = [];
+    const handler = (reply) => (req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200); return res.end(JSON.stringify({ data: [{ id: 'llama-3.1-8b' }, { id: 'whisper-large-v3' }, { id: 'distil-whisper-pt' }] })); }
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('latin1');
+        seen.push({ auth: req.headers.authorization, type: req.headers['content-type'], raw });
+        const out = reply(raw);
+        res.writeHead(out.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out.body));
+      });
+    };
+
+    // envio correto, com troca do modelo recusado
+    await withServer(handler((raw) => (raw.includes('whisper-large-v3-turbo')
+      ? { status: 400, body: { error: { message: 'model not found', code: 'model_not_found' } } }
+      : { status: 200, body: { text: '  Que horas são?  ' } })), async (base) => {
+      const r = await transcribe({ audio, mime: 'audio/webm;codecs=opus' }, { settings, endpoint: `${base}/openai/v1/audio/transcriptions`, key: 'gsk_teste' });
+      assert.deepStrictEqual(r, { text: 'Que horas são?', model: 'whisper-large-v3' });
+      const last = seen.at(-1);
+      assert.strictEqual(last.auth, 'Bearer gsk_teste');
+      assert.match(last.type, /^multipart\/form-data/);
+      assert.match(last.raw, /name="language"\r\n\r\npt/);
+      assert.match(last.raw, /name="file"; filename="fala\.webm"/);
+      assert.match(last.raw, /name="model"\r\n\r\nwhisper-large-v3\r\n/);
+    });
+
+    // silêncio: o Whisper devolve frase de legenda, que deve ser descartada
+    for (const text of ['Legendas pela comunidade Amara.org', '...', '']) {
+      await withServer(handler(() => ({ status: 200, body: { text } })), async (base) => {
+        const r = await transcribe({ audio, mime: 'audio/webm' }, { settings, endpoint: `${base}/openai/v1/audio/transcriptions`, key: 'k' });
+        assert.match(r.error, /Não entendi/, `texto "${text}"`);
+      });
+    }
+
+    // validações locais, sem rede
+    assert.match((await transcribe({ audio, mime: 'video/mp4' }, { settings, key: 'k' })).error, /formato/);
+    assert.match((await transcribe({ audio: new Uint8Array(0), mime: 'audio/webm' }, { settings, key: 'k' })).error, /gravar/);
+    assert.match((await transcribe({ audio: new Uint8Array(6 * 1024 * 1024), mime: 'audio/webm' }, { settings, key: 'k' })).error, /longa demais/);
+    assert.match((await transcribe({ audio: 'texto', mime: 'audio/webm' }, { settings, key: 'k' })).error, /gravar/);
+
+    // erro de chave
+    await withServer(handler(() => ({ status: 401, body: {} })), async (base) => {
+      const r = await transcribe({ audio, mime: 'audio/webm' }, { settings, endpoint: `${base}/openai/v1/audio/transcriptions`, key: 'k' });
+      assert.match(r.error, /chave do Groq foi recusada/);
     });
   }
 

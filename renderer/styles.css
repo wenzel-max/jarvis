@@ -81,6 +81,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: rgba(9, 6, 4, 0.55); color: var(--ink); font-size: 1rem; font-weight: 300; }
 .ask input::placeholder { color: var(--dim); }
 .ask input:disabled { opacity: 0.6; }
+.hud[data-state="listening"] #ask-mic { border-color: var(--ember); background: rgba(255, 154, 31, 0.18); }
 
 /* ---------- barra inferior ---------- */
 .bar { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: clamp(10px, 2vh, 20px); }

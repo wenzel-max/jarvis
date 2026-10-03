@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('jarvis', {
       ipcRenderer.removeListener('ai:sentence', listener);
     }
   },
+  transcribe: (audio, mime) => ipcRenderer.invoke('stt:transcribe', { audio, mime }),
   cancelAi: () => ipcRenderer.invoke('ai:cancel'),
   aiKeyStatus: () => ipcRenderer.invoke('ai:key-status'),
   setAiKey: (key) => ipcRenderer.invoke('ai:key-set', key),
