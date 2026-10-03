@@ -64,10 +64,27 @@ function timeSentence(d) {
   return `${verbo} ${hora} e ${m} ${m === 1 ? 'minuto' : 'minutos'}.`;
 }
 
+/** "às 10", "às 14 e 30", "à 1 hora": como a hora se fala. */
+export function spokenHour(d) {
+  const h = d.getHours();
+  const m = d.getMinutes();
+  if (h === 12 && m === 0) return 'ao meio-dia';
+  if (h === 0 && m === 0) return 'à meia-noite';
+  const a = h === 1 ? 'à' : 'às';
+  const hh = h === 1 ? 'uma hora' : `${h} ${h === 1 ? 'hora' : 'horas'}`;
+  return m === 0 ? `${a} ${hh}` : `${a} ${h === 1 ? 'uma' : h} e ${m}`;
+}
+
+export function eventSentence(e) {
+  const title = e.title.replace(/[.!?…\s]+$/, '').slice(0, 100);
+  if (e.allDay) return `${title}, o dia todo.`;
+  return `${title}, ${spokenHour(new Date(e.start))}.`;
+}
+
 const trimTitle = (t) => t.replace(/[.!?…\s]+$/, '').slice(0, 150);
 
 /** Monta as frases do resumo do dia. Cada frase vira um áudio (e uma legenda na tela). */
-export function buildBriefing({ name, nameSpoken, now, weather, cityName, news }) {
+export function buildBriefing({ name, nameSpoken, now, weather, cityName, news, agenda }) {
   const g = greeting(now);
   const out = [
     { show: `${g}, ${name}.`, say: `${g}, ${nameSpoken || name}.` },
@@ -86,6 +103,21 @@ export function buildBriefing({ name, nameSpoken, now, weather, cityName, news }
     if (rain >= 20) out.push(`A chance de chuva é de ${Math.round(rain)} por cento.`);
   } else {
     out.push('Não consegui consultar o clima agora.');
+  }
+
+  if (agenda?.connected && !agenda.error) {
+    const events = agenda.events ?? [];
+    // só o que ainda vai acontecer (ou o dia inteiro); o que já passou hoje não interessa
+    const upcoming = events.filter((e) => e.allDay || new Date(e.end || e.start) > now);
+    if (!events.length) out.push('Sua agenda está livre hoje.');
+    else if (!upcoming.length) out.push('Você não tem mais compromissos hoje.');
+    else {
+      out.push(upcoming.length === 1 ? 'Você tem um compromisso hoje.' : `Você tem ${upcoming.length} compromissos hoje.`);
+      for (const e of upcoming.slice(0, 4)) out.push(eventSentence(e));
+    }
+    const tasks = agenda.tasks ?? [];
+    if (tasks.length === 1) out.push(`Você tem uma tarefa pendente: ${trimTitle(tasks[0].title)}.`);
+    else if (tasks.length > 1) out.push(`Você tem ${tasks.length} tarefas pendentes, entre elas ${trimTitle(tasks[0].title)}.`);
   }
 
   const top = (news || []).slice(0, 3);

@@ -1,15 +1,19 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, safeStorage } = require('electron');
 const path = require('node:path');
 const settings = require('./src/settings');
 const tts = require('./src/tts');
 const feeds = require('./src/feeds');
 const ai = require('./src/ai');
+const secrets = require('./src/secrets');
+const google = require('./src/google');
+const { createTools } = require('./src/tools');
 const { applyMicCompat } = require('./src/compat');
 
 const AUTOSTART_FLAG = '--autostart';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let win = null;
+let tools = null;
 
 app.setAppUserModelId('com.axl.jarvis');
 
@@ -57,6 +61,14 @@ async function boot() {
   settings.init(app.getPath('userData'));
   tts.init(path.join(app.getPath('userData'), 'tts-cache'));
   ai.init(app.getPath('userData'));
+  secrets.init(app.getPath('userData'), safeStorage);
+  google.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
+  tools = createTools({
+    google,
+    web: (q, ctx) => ai.webSearch(q, { settings: settings.get(), signal: ctx?.signal, onSetting: (k, v) => settings.update({ [k]: v }) }),
+    isGoogleConnected: () => google.status().connected,
+    settings: () => settings.get(),
+  });
   applyAutostart(settings.get());
   allowMicrophoneOnly();
   registerIpc();
@@ -118,6 +130,7 @@ function registerIpc() {
     const id = req && req.id;
     return ai.ask(req || {}, {
       settings: settings.get(),
+      tools,
       onSentence: (text) => { if (!e.sender.isDestroyed()) e.sender.send('ai:sentence', { id, text }); },
     }).then((reply) => {
       // Se o modelo configurado foi trocado por outro que funcionou, guarda o novo.
@@ -125,6 +138,12 @@ function registerIpc() {
       return reply;
     });
   });
+  ipcMain.handle('google:status', () => google.status());
+  ipcMain.handle('google:connect', async (_e, creds) => {
+    try { return { ok: true, ...(await google.connect(creds || {})) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('google:disconnect', async () => ({ ok: true, ...(await google.disconnect()) }));
+  ipcMain.handle('agenda:today', () => google.today());
   ipcMain.handle('stt:transcribe', async (_e, req) => {
     const reply = await ai.transcribe(req || {}, { settings: settings.get() });
     if (reply.model && reply.model !== settings.get().sttModel) settings.update({ sttModel: reply.model });

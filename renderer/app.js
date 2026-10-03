@@ -21,6 +21,7 @@ const notice$ = $('#notice');   // só para avisos e erros; o Jarvis não mostra
 let settings = await api.getSettings();
 let chat = [];            // últimas perguntas e respostas, para a IA entender "e amanhã?"
 let weather = null;
+let agenda = null;
 let news = [];
 let speakId = 0;
 let statusNote = '';
@@ -177,6 +178,54 @@ async function loadNews() {
         el('li', 'muted', 'Não consegui carregar as notícias. Verifique a conexão ou as fontes em Ajustes.'),
       );
     }
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agenda e tarefas (Google)
+// ---------------------------------------------------------------------------
+const hhmm = (iso) => formatClock(new Date(iso));
+
+function renderAgenda() {
+  const box = $('#agenda');
+  if (!agenda?.connected) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const nodes = [el('h2', null, 'Hoje na agenda')];
+  if (agenda.error) {
+    nodes.push(el('p', 'muted', agenda.error));
+  } else {
+    const list = el('ul');
+    const now = new Date();
+    for (const e of agenda.events.slice(0, 5)) {
+      const li = el('li');
+      if (!e.allDay && new Date(e.end || e.start) < now) li.className = 'done';
+      li.append(el('time', null, e.allDay ? 'dia todo' : hhmm(e.start)), el('span', null, e.title));
+      list.append(li);
+    }
+    if (!agenda.events.length) list.append(el('li', 'muted', 'Nada marcado para hoje.'));
+    nodes.push(list);
+    if (agenda.tasks.length) {
+      nodes.push(el('h2', null, 'Tarefas'));
+      const tasks = el('ul');
+      for (const t of agenda.tasks.slice(0, 4)) {
+        const li = el('li');
+        li.append(el('time', null, '·'), el('span', null, t.title));
+        tasks.append(li);
+      }
+      nodes.push(tasks);
+    }
+  }
+  box.replaceChildren(...nodes);
+}
+
+async function loadAgenda() {
+  try {
+    agenda = await api.agendaToday();
+    renderAgenda();
+    return !agenda.error;
+  } catch (err) {
+    console.warn('[agenda]', err);
     return false;
   }
 }
@@ -461,6 +510,7 @@ async function runBriefing() {
       weather,
       cityName: settings.city.name,
       news,
+      agenda,
     }));
   } finally {
     $('#btn-brief').disabled = false;
@@ -533,6 +583,7 @@ function fillSettings() {
   $('#set-mic-compat').checked = settings.micCompat;
   $('#set-listen').checked = settings.listenOnStart;
   $('#set-bargein').checked = settings.bargeIn;
+  $('#set-websearch').checked = settings.webSearch;
   refreshAiStatus();
 }
 
@@ -556,8 +607,21 @@ async function refreshMicList() {
   select.value = settings.micLabel;
 }
 
+async function refreshGoogleStatus() {
+  const s = await api.googleStatus();
+  $('#google-status').textContent = s.connected
+    ? 'Conectado. O Jarvis lê e cria compromissos e tarefas por voz.'
+    : s.needsReconnect
+      ? 'O acesso expirou. Conecte de novo para voltar a usar a agenda.'
+      : 'Não conectado. Siga os passos abaixo e cole as credenciais para conectar.';
+  $('#btn-g-disconnect').hidden = !s.connected && !s.needsReconnect;
+  $('#btn-g-connect').textContent = s.connected ? 'Conectar de novo' : 'Conectar com o Google';
+  return s;
+}
+
 function openSettings() {
   fillSettings();
+  refreshGoogleStatus();
   refreshMicList();
   drawer.hidden = false;
   $('#settings-close').focus();
@@ -648,6 +712,35 @@ function bindSettings() {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
   });
+  $('#btn-g-connect').addEventListener('click', async () => {
+    const msg = $('#google-msg');
+    const btn = $('#btn-g-connect');
+    const clientId = $('#set-g-id').value.trim();
+    const clientSecret = $('#set-g-secret').value.trim();
+    msg.hidden = false;
+    if (!clientId || !clientSecret) { msg.textContent = 'Cole o ID e a chave secreta do cliente.'; return; }
+    btn.disabled = true;
+    msg.textContent = 'Abrindo o navegador para você entrar no Google…';
+    const r = await api.googleConnect({ clientId, clientSecret });
+    btn.disabled = false;
+    if (r.ok) {
+      msg.textContent = 'Conectado!';
+      $('#set-g-id').value = '';
+      $('#set-g-secret').value = '';
+      loop('agenda', loadAgenda, 10 * 60e3, 2 * 60e3);
+    } else {
+      msg.textContent = r.error;
+    }
+    refreshGoogleStatus();
+  });
+  $('#btn-g-disconnect').addEventListener('click', async () => {
+    await api.googleDisconnect();
+    $('#google-msg').hidden = true;
+    agenda = null;
+    renderAgenda();
+    refreshGoogleStatus();
+  });
+  $('#set-websearch').addEventListener('change', (e) => save({ webSearch: e.target.checked }));
   $('#set-bargein').addEventListener('change', (e) => { save({ bargeIn: e.target.checked }); mic.bargeIn = e.target.checked; });
   $('#set-listen').addEventListener('change', (e) => {
     save({ listenOnStart: e.target.checked });
@@ -736,6 +829,7 @@ tick();
 firstLoad = Promise.all([
   loop('weather', loadWeather, 15 * 60e3, 2 * 60e3),
   loop('news', loadNews, 20 * 60e3, 2 * 60e3),
+  loop('agenda', loadAgenda, 10 * 60e3, 2 * 60e3),
 ]);
 
 // A esfera leva ~2,6 s para montar; o texto aparece junto com o fim da animação.

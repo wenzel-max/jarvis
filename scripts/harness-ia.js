@@ -17,6 +17,8 @@ const settings = {
   feeds: [{ name: 'G1', url: 'https://g1.globo.com/rss/g1/' }],
 };
 let aiMode = 'ok';
+let googleOn = false;
+const googleCalls = [];
 const asked = [];     // perguntas que chegaram à IA
 const heard = [];     // trechos de áudio enviados para transcrição { bytes, mime, at }
 const spoken = [];    // frases que o Jarvis mandou sintetizar (o que ele fala)
@@ -60,6 +62,26 @@ function fakeIpc() {
     if (next && typeof next === 'object' && next.delay) await sleep(next.delay);
     if (next === undefined) return { error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' };
     return typeof next === 'string' ? { text: next, model: 'whisper-large-v3-turbo' } : next;
+  });
+  ipcMain.handle('google:status', () => ({ hasCredentials: googleOn, connected: googleOn, needsReconnect: false }));
+  ipcMain.handle('google:connect', async (_e, creds) => {
+    googleCalls.push(creds);
+    if (!/apps\.googleusercontent\.com$/.test(creds?.clientId ?? '')) return { ok: false, error: 'O ID do cliente parece errado. Ele termina com .apps.googleusercontent.com.' };
+    googleOn = true;
+    return { ok: true, hasCredentials: true, connected: true, needsReconnect: false };
+  });
+  ipcMain.handle('google:disconnect', () => { googleOn = false; return { ok: true, connected: false }; });
+  ipcMain.handle('agenda:today', () => {
+    if (!googleOn) return { connected: false, events: [], tasks: [] };
+    const at = (H, M = 0) => { const d = new Date(); d.setHours(H, M, 0, 0); return d.toISOString(); };
+    return {
+      connected: true,
+      events: [
+        { id: 'e1', title: 'Reunião com o time', start: at(23, 30), end: at(23, 59), allDay: false },
+        { id: 'e2', title: 'Aniversário da Ana', start: '2026-10-05', end: '2026-10-06', allDay: true },
+      ],
+      tasks: [{ id: 't1', title: 'Comprar pão' }, { id: 't2', title: 'Pagar a luz' }],
+    };
   });
   ipcMain.handle('ai:cancel', () => {});
   ipcMain.handle('ai:ask', async (e, req) => {
@@ -293,6 +315,39 @@ app.whenReady().then(async () => {
   const micMsg = await js(win, "document.querySelector('#mic-msg').textContent");
   check('teste do microfone informa o nível medido', /Funcionando.*nível máximo \d+%/.test(micMsg), micMsg);
   await shot(win, '4-ajustes');
+  await click(win, '#settings-close');
+  await sleep(300);
+
+  // ---- Google Agenda e Tarefas ----
+  check('sem Google conectado o painel da agenda não aparece', await js(win, "document.querySelector('#agenda').hidden"));
+  await click(win, '#btn-settings');
+  await sleep(400);
+  check('Ajustes mostra "Não conectado"', /Não conectado/.test(await js(win, "document.querySelector('#google-status').textContent")));
+  await js(win, "(() => { document.querySelector('#set-g-id').value = 'errado'; document.querySelector('#set-g-secret').value = 'GOCSPX-segredo_do_cliente'; })()");
+  await click(win, '#btn-g-connect');
+  await sleep(400);
+  check('credencial errada mostra o erro e não conecta', /ID do cliente parece errado/.test(await js(win, "document.querySelector('#google-msg').textContent")) && !googleOn);
+  await js(win, "document.querySelector('#set-g-id').value = 'meu-app.apps.googleusercontent.com'");
+  await click(win, '#btn-g-connect');
+  await sleep(700);
+  check('conecta e limpa os campos de credencial', googleOn && (await js(win, "document.querySelector('#set-g-id').value + document.querySelector('#set-g-secret').value")) === '' && /Conectado/.test(await js(win, "document.querySelector('#google-status').textContent")));
+  check('botão Desconectar aparece', !(await js(win, "document.querySelector('#btn-g-disconnect').hidden")));
+  await shot(win, '5-google-ajustes');
+  await click(win, '#settings-close');
+  await sleep(500);
+  const painel = await js(win, "document.querySelector('#agenda').hidden ? '' : document.querySelector('#agenda').textContent");
+  check('painel mostra os compromissos e as tarefas', /Reunião com o time/.test(painel) && /Aniversário da Ana/.test(painel) && /dia todo/.test(painel) && /Comprar pão/.test(painel), painel.slice(0, 120));
+  await shot(win, '6-agenda');
+  const spokenBrief = spoken.length;
+  await click(win, '#btn-brief');
+  await settle(60000);
+  const dito = spoken.slice(spokenBrief);
+  check('o resumo falado inclui a agenda e as tarefas', dito.some((t) => /Você tem 2 compromissos hoje/.test(t)) && dito.some((t) => /Reunião com o time, às 23 e 30/.test(t)) && dito.some((t) => /2 tarefas pendentes/.test(t)), JSON.stringify(dito.filter((t) => /compromiss|tarefa|às/.test(t))));
+  await click(win, '#btn-settings');
+  await sleep(300);
+  await click(win, '#btn-g-disconnect');
+  await sleep(500);
+  check('desconectar esconde o painel', !googleOn && await js(win, "document.querySelector('#agenda').hidden"));
   await click(win, '#settings-close');
   await sleep(300);
 

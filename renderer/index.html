@@ -21,6 +21,7 @@
       <div id="weather" class="weather" aria-live="polite">
         <p class="muted">Carregando o clima…</p>
       </div>
+      <div id="agenda" class="agenda" hidden></div>
     </section>
 
     <section class="center">
@@ -104,6 +105,33 @@
       </section>
 
       <section class="group">
+        <h3>Google Agenda e Tarefas</h3>
+        <p id="google-status" class="hint"></p>
+        <details class="steps">
+          <summary>Como criar as credenciais (uma vez só)</summary>
+          <ol>
+            <li>Entre em console.cloud.google.com e crie um projeto (qualquer nome).</li>
+            <li>Em "APIs e serviços", ative a <b>Google Calendar API</b> e a <b>Google Tasks API</b>.</li>
+            <li>Em "Tela de consentimento OAuth" (Google Auth Platform), escolha <b>Externo</b>, preencha o nome do app e o seu e-mail e adicione o seu e-mail como usuário de teste.</li>
+            <li>Em "Público", clique em <b>Publicar app</b>. Sem isso o acesso expira a cada 7 dias.</li>
+            <li>Em "Credenciais", crie um <b>ID do cliente OAuth</b> do tipo <b>App para computador</b> e copie o ID e a chave secreta para cá.</li>
+            <li>Ao conectar, o Google avisa que o app não foi verificado: clique em <b>Avançado</b> e depois em <b>Acessar</b>. É o seu próprio app.</li>
+          </ol>
+        </details>
+        <label class="field"><span>ID do cliente</span>
+          <input id="set-g-id" type="text" autocomplete="off" spellcheck="false" placeholder="...apps.googleusercontent.com">
+        </label>
+        <label class="field"><span>Chave secreta do cliente</span>
+          <input id="set-g-secret" type="password" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="row wrap">
+          <button id="btn-g-connect" type="button" class="btn">Conectar com o Google</button>
+          <button id="btn-g-disconnect" type="button" class="btn btn-quiet" hidden>Desconectar</button>
+        </div>
+        <p id="google-msg" class="hint" hidden></p>
+      </section>
+
+      <section class="group">
         <h3>Notícias</h3>
         <label class="field"><span>Fontes, uma por linha: Nome | endereço do feed RSS</span>
           <textarea id="set-feeds" rows="4" spellcheck="false"></textarea>
@@ -121,6 +149,7 @@
           <button id="btn-ai-getkey" type="button" class="btn btn-quiet">Criar chave grátis</button>
         </div>
         <p id="ai-msg" class="hint" hidden></p>
+        <label class="check"><input id="set-websearch" type="checkbox"><span>Pesquisar na internet quando precisar</span></label>
         <label class="field"><span>Modelo das respostas</span>
           <input id="set-ai-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
         </label>

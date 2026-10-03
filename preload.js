@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('jarvis', {
       ipcRenderer.removeListener('ai:sentence', listener);
     }
   },
+  googleStatus: () => ipcRenderer.invoke('google:status'),
+  googleConnect: (creds) => ipcRenderer.invoke('google:connect', creds),
+  googleDisconnect: () => ipcRenderer.invoke('google:disconnect'),
+  agendaToday: () => ipcRenderer.invoke('agenda:today'),
   transcribe: (audio, mime) => ipcRenderer.invoke('stt:transcribe', { audio, mime }),
   cancelAi: () => ipcRenderer.invoke('ai:cancel'),
   aiKeyStatus: () => ipcRenderer.invoke('ai:key-status'),

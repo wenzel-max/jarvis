@@ -38,8 +38,12 @@ src/settings.js   configurações persistidas (settings.json em userData) com va
 src/tts.js        síntese edge-tts, cache em disco, timeout, lista de vozes pt-BR
 src/feeds.js      clima, busca de cidade, notícias RSS (decodifica ISO-8859-1)
 src/compat.js     modo de compatibilidade do microfone (desliga o sandbox de áudio do Chromium)
-src/ai.js         perguntas à IA (Groq, streaming), chave cifrada com safeStorage, divisão em frases
-scripts/          test-ai.js (servidor falso), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
+src/ai.js         perguntas à IA (Groq, streaming), ciclo de ferramentas, busca na internet (Compound), chave cifrada, divisão em frases
+src/tools.js      ferramentas da IA (agenda, tarefas, busca; Spotify depois): definições, execução e resultados em texto
+src/google.js     Google Agenda e Tarefas: login, renovação do token, eventos e tarefas
+src/oauth.js      login OAuth de desktop (navegador do sistema + retorno em 127.0.0.1 + PKCE), serve ao Google e ao Spotify
+src/secrets.js    cofre de segredos cifrado com safeStorage (tokens e credenciais), um arquivo .bin por item
+scripts/          test-ai.js, test-google.js (Google falso), test-tools.js (Groq falso com ferramentas), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
 renderer/
   mic.js          microfone sempre aberto: segmenta frases por silêncio (pré-roll 400 ms), entrega WAV 16 kHz, escolhe o dispositivo, mensagens de erro
   wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) no começo ou no fim da frase; frases curtas ("para", "obrigado")
@@ -62,7 +66,7 @@ npm run dist       # gera dist/Jarvis Setup x.y.z.exe
 
 Atalhos no app: F11 tela cheia, Esc fecha Ajustes ou sai da tela cheia, Ctrl+, abre Ajustes, Ctrl+M liga/desliga a escuta (não existe mais caixa de digitar nem legenda: o Jarvis é só por voz), Esc fecha Ajustes ou para a fala.
 
-Testes: `node scripts/test-ai.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
+Testes: `node scripts/test-ai.js`, `test-google.js`, `test-tools.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
 
 ## Arquitetura e decisões que não devem ser desfeitas sem motivo
 
@@ -72,7 +76,7 @@ Testes: `node scripts/test-ai.js` e `node scripts/test-wake.mjs` (sem rede) e `x
 
 **Settings validados no processo principal** (`sanitize` em `src/settings.js`): faixas limitadas, voz validada por regex, só URLs `http(s)` nos feeds, cidade com coordenadas válidas. Todo campo novo precisa entrar no `DEFAULTS` e no `sanitize`.
 
-**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `news:get`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`. Novo canal = handler em `main.js` + método no `preload.js`.
+**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `news:get`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`. Novo canal = handler em `main.js` + método no `preload.js`.
 
 **Por que a voz roda no processo principal.** Desde a v1.4.0 o edge-tts exige um header de WebSocket que navegadores não permitem. Só Node funciona. O main devolve um `Buffer` MP3 por IPC e o renderer toca num `<audio>`.
 
@@ -89,6 +93,12 @@ Testes: `node scripts/test-ai.js` e `node scripts/test-wake.mjs` (sem rede) e `x
 **Voz natural e sem buracos (`voice.js`).** Web Audio, não `<audio>`: cada frase é decodificada e agendada colada na anterior, com 0,12 s de respiração (`BREATH_S`); duas frases ficam sintetizadas à frente (`LOOKAHEAD`); `stop()` corta tudo na hora (3 ms). A voz do sistema (reserva) não se agenda: espera o que já foi agendado. O texto também importa: o prompt de `src/ai.js` pede fala coloquial brasileira ("tá", "pra"), frases curtas e uma a três frases, e o `Sentencer` solta a PRIMEIRA frase mais cedo (14 caracteres, ou até uma vírgula com 30) porque é ela que decide quando o Jarvis começa a falar.
 
 **Interrupção (barge-in).** O microfone NÃO fica mudo quando o Jarvis fala: em `thinking`/`speaking` o `Mic` entra em modo `duck` (limiar = max(2×normal, 0,03) e 6 blocos seguidos, ~250 ms) e, ao detectar fala firme, dispara `onBargeIn` → `interrupt()` em `app.js` (corta voz e IA, abre a janela de conversa, passa a ouvir). O trecho interrompido segue como pergunta sem exigir "Jarvis". "Para", "chega" etc. calam sem chamar a IA e "obrigado" responde "De nada!" local (`classifyShort`). Uma pausa no meio da frase (>0,6 a 0,85 s) gera dois trechos: o segundo fica em `pendingSeg` e é juntado ao primeiro. Config `bargeIn` (padrão ligado): com caixas de som o eco pode se auto-interromper, então o aviso nos Ajustes diz para usar fone ou desligar. Dependemos do cancelamento de eco do Chromium (`echoCancellation`), não testado com caixas reais.
+
+**Ferramentas da IA (`src/tools.js` + `ask` em `src/ai.js`).** `ask` é um ciclo: o modelo responde em streaming e, se pedir uma ferramenta (`tool_calls` chegam em pedaços, por índice), o main executa, devolve o resultado como texto (`role: tool`) e o modelo responde de novo (máx. 4 voltas, depois é forçado a responder). Sem ferramenta a resposta sai em streaming como sempre, sem atraso extra. Só vão ao modelo as ferramentas que estão disponíveis agora (`definitions()`: Google só se conectado, busca só se `webSearch`), e o prompt diz o que o Jarvis consegue fazer e a data/hora de agora em ISO para ele resolver "amanhã", "sexta". Uma frase dita antes da ferramenta ("Deixa eu ver.") é falada normalmente. Erros de ferramenta viram texto (`Não deu certo: ...`), nunca lançam. Se o modelo monta a chamada errada (`tool_use_failed`), repete sem ferramentas. Apagar/mudar compromisso exige `agenda_listar` antes (ids) e o prompt manda perguntar se houver dúvida.
+
+**Google Agenda e Tarefas (`src/google.js`).** OAuth de app de desktop (Google aceita porta aleatória em 127.0.0.1; exige `client_secret` mesmo com PKCE; `access_type=offline&prompt=consent`). Escopos: `calendar.events` e `tasks`. Credenciais (ID e chave do cliente) e tokens ficam cifrados em `google.bin`, colados pelo Axl nos Ajustes (nunca voltam ao renderer). **Armadilha:** com o app em "Teste" no Google Cloud o refresh token expira em 7 dias; o Axl precisa clicar em "Publicar app" (aparece o aviso de app não verificado, é o app dele). `invalid_grant` marca `needsReconnect` e a mensagem manda reconectar. A agenda só olha o calendário principal. O painel "Hoje na agenda" (coluna esquerda) e o resumo falado usam `agenda:today`.
+
+**Busca na internet.** Ferramenta `pesquisar_na_internet` chama o modelo `groq/compound-mini` (busca embutida, mesma chave; limite gratuito por busca: 30 req/min e 250/dia, mas a página oficial estava bloqueada no ambiente: confirmar se o plano gratuito permite a ferramenta de busca, que é cobrada em planos pagos). Se o modelo não existir, descobre outro `compound` da conta e grava em `webModel`; se não houver, devolve que a busca não está disponível. Opção `webSearch` nos Ajustes.
 
 **Esfera (`orb.js`).** Três camadas aditivas sobre fundo sólido `#090604`: núcleo de partículas (rotação diferencial por latitude, o que dá o efeito de redemoinho sem tirar pontos da esfera), traços de circuito (`LineSegments` que andam na superfície com curvas de 90°) e 8 anéis de "cometas" (shader com cabeça e cauda). Uniformes compartilhados entre materiais. Estados em `STATES` (`idle`, `listening`, `thinking`, `speaking`) são interpolados suavemente; `setState(nome)` e `setLevel(0..1)` são a API pública. Os anéis são definidos por vetor normal com `|nz| >= 0.4`, **de propósito**: um anel visto de perfil vira um traço reto feio. Pixel ratio limitado a 1.5. Em janelas ≤ 980 px a esfera encolhe e sobe.
 
@@ -118,17 +128,18 @@ Testado (Electron 44 em Linux com display virtual, harness com IPC simulado e `c
 6. Desempenho real na GPU integrada (o teste usou renderização por software).
 7. Como a voz pronuncia "Axl" (campo `userNameSpoken` existe para corrigir).
 8. Chamada real ao Groq (só testada contra servidor falso), `safeStorage` no Windows e o ID do modelo padrão.
+10. Login real do Google (OAuth, publicar o app, aviso de não verificado), a Calendar API e a Tasks API de verdade, e a busca `groq/compound-mini` no plano gratuito.
 9. Microfone real no Windows (o Intel Smart Sound do notebook do Axl falha no Chromium; `micCompat` é a aposta, ainda não confirmada): permissão de privacidade, qualidade da gravação, limiar de silêncio e `multipart` contra o Whisper de verdade. O harness usa o microfone falso do Chromium (bipes).
 
 Para testar a interface sem rede, o padrão que funcionou foi um script Electron separado que registra handlers `ipcMain` falsos (clima/notícias simulados), carrega `renderer/index.html` com o `preload.js` real e usa `webContents.capturePage()` para gerar imagens. Vale recriar isso em `scripts/` se for mexer em visual.
 
 ## Configurações (`settings.json`, em `%APPDATA%\jarvis`)
 
-`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `feeds [{name, url}]`, `aiModel`, `sttModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`.
+`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `feeds [{name, url}]`, `aiModel`, `sttModel`, `webSearch`, `webModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`.
 
 ## Roadmap
 
-**Fase 2: agenda e tarefas do dia (Google).** Google Calendar API e Google Tasks API (cota gratuita sobra para uso pessoal). Fluxo OAuth para app desktop: navegador do sistema + redirecionamento em `127.0.0.1` com porta local + PKCE, escopos somente leitura. Guardar o refresh token com `safeStorage` do Electron, nunca em texto puro nem no `settings.json`. Todas as chamadas no processo principal (a CSP do renderer continua `connect-src 'none'`). Novos widgets na coluna esquerda e frases novas em `buildBriefing` ("Você tem 2 compromissos hoje..."). Conta Google do Axl: wenzelaxl5@gmail.com.
+**Fase 2: agenda e tarefas do dia (Google) (FEITA, falta testar com a conta real).** Ver "Google Agenda e Tarefas" acima. Texto original do plano: Google Calendar API e Google Tasks API (cota gratuita sobra para uso pessoal). Fluxo OAuth para app desktop: navegador do sistema + redirecionamento em `127.0.0.1` com porta local + PKCE, escopos somente leitura. Guardar o refresh token com `safeStorage` do Electron, nunca em texto puro nem no `settings.json`. Todas as chamadas no processo principal (a CSP do renderer continua `connect-src 'none'`). Novos widgets na coluna esquerda e frases novas em `buildBriefing` ("Você tem 2 compromissos hoje..."). Conta Google do Axl: wenzelaxl5@gmail.com.
 
 **Fase 3: perguntas e respostas com IA (FEITA, falta testar em Windows real).** Groq (`llama-3.1-8b-instant` por padrão, editável em Ajustes), chave cifrada em `ai-key.bin` com `safeStorage` (nunca vai ao renderer nem ao `settings.json`). A resposta chega em streaming, `src/ai.js` corta em frases e o renderer as empurra numa fila assíncrona que `Voice.speakSequence` consome (aceita lista ou iterável assíncrono). Histórico das últimas 8 mensagens fica só no renderer, validado no main. Limites gratuitos conferidos por busca (30 req/min; 8b: ~14,4 mil req e 500 mil tokens/dia; 70b: 1 mil req e 100 mil tokens/dia), mas a página oficial estava bloqueada no ambiente: confirmar em console.groq.com/docs/rate-limits. Se o Groq recusar o modelo (ID renomeado/aposentado), `ai.ask` consulta `/models` da conta, escolhe outro (`PREFERRED`), tenta de novo e o `main.js` grava o que funcionou em `aiModel`. Pendente: reserva offline com Ollama (opcional). Texto original do plano: Caixa de texto + resposta falada, estados `thinking` e `speaking` da esfera já prontos. API gratuita (Gemini ou Groq) como principal, com a chave guardada via `safeStorage`; reserva opcional em Ollama com modelo pequeno. Os limites gratuitos mudam, confirmar na documentação oficial antes de implementar. Streaming de resposta falando frase a frase (reaproveitar `speakSequence`).
 
