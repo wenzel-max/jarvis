@@ -1,6 +1,6 @@
 import { Orb } from './orb.js';
 import { Voice } from './voice.js';
-import { Mic, micErrorMessage } from './mic.js';
+import { Mic, micErrorMessage, explainNoSpeech } from './mic.js';
 import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -303,7 +303,7 @@ async function listen() {
 
   if (problem || !heard) {
     askInput.disabled = askSend.disabled = false;
-    showNotice(problem ?? 'Não ouvi nada. Aperte Falar e tente de novo.');
+    showNotice(problem ?? explainNoSpeech(mic.stats));
     return;
   }
 
@@ -519,6 +519,31 @@ function bindSettings() {
   $('#set-ai-model').addEventListener('change', async (e) => {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
+  });
+  $('#btn-mic-test').addEventListener('click', async () => {
+    const msg = $('#mic-msg');
+    const btn = $('#btn-mic-test');
+    if (mic.active) { mic.cancel(); return; }
+    speakId++;
+    voice.stop();
+    abortAsk();
+    btn.textContent = 'Fale agora…';
+    msg.hidden = false;
+    msg.textContent = 'Ouvindo por 4 segundos. Diga alguma coisa.';
+    setState('listening');
+    let problem = null;
+    try {
+      await mic.record({ maxMs: 4000, noSpeechMs: 4000, silenceMs: 4000 });
+    } catch (err) {
+      problem = micErrorMessage(err);
+    }
+    setState('idle');
+    btn.textContent = 'Testar microfone';
+    if (problem) { msg.textContent = problem; return; }
+    const s = mic.stats;
+    msg.textContent = s.speechMs >= 300
+      ? `Funcionando: "${s.label || 'microfone'}" captou a sua voz (nível máximo ${Math.round(Math.min(1, s.peak * 5) * 100)}%).`
+      : explainNoSpeech(s);
   });
   $('#set-stt-model').addEventListener('change', async (e) => {
     await save({ sttModel: e.target.value });

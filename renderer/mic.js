@@ -22,9 +22,23 @@ export function micErrorMessage(err) {
   }
 }
 
+/** Volume em % (0..100) a partir do rms, na mesma escala da esfera. */
+const pct = (rms) => Math.round(Math.min(1, rms * 5) * 100);
+
+/** Explica, com os números medidos, por que não houve fala. */
+export function explainNoSpeech(stats) {
+  if (!stats) return 'Não ouvi nada. Aperte Falar e tente de novo.';
+  const dev = stats.label ? `"${stats.label}"` : 'o microfone';
+  if (stats.peak < 0.003) {
+    return `O Jarvis abriu ${dev}, mas só chegou silêncio (nível ${pct(stats.peak)}%). Veja se o microfone não está mudo (tecla do notebook, Configurações, Sistema, Som, Entrada) e se o volume de entrada está alto.`;
+  }
+  return `O Jarvis abriu ${dev}, mas o volume ficou baixo (nível máximo ${pct(stats.peak)}%). Fale mais perto e mais alto e tente de novo.`;
+}
+
 export class Mic {
   constructor() {
     this.level = 0;      // volume atual, 0..1
+    this.stats = null;   // da última gravação: { label, peak, speechMs }
     this.active = false;
     this._finish = null;
     this._cancel = null;
@@ -88,6 +102,8 @@ export class Mic {
     if (this.active) return null;
     const stream = await this._open();
     this.active = true;
+    const stats = { label: stream.getAudioTracks()[0]?.label ?? '', peak: 0, speechMs: 0 };
+    this.stats = stats;
 
     const ctx = new AudioContext();
     const analyser = ctx.createAnalyser();
@@ -101,7 +117,7 @@ export class Mic {
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
 
     const t0 = performance.now();
-    let floor = 0, floorN = 0;          // ruído de fundo
+    let floor = Infinity;               // ruído de fundo: o MENOR volume dos primeiros instantes
     let speechMs = 0, lastVoice = 0, spoke = false;
     let cancelled = false;
     let timer = null;
@@ -119,14 +135,16 @@ export class Mic {
       for (const b of samples) { const v = (b - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / samples.length);
       this.level = Math.min(1, rms * 5);
+      stats.peak = Math.max(stats.peak, rms);
 
       const now = performance.now();
       const elapsed = now - t0;
       if (elapsed < NOISE_CALIBRATION_MS) {
-        floor += rms; floorN++;
+        floor = Math.min(floor, rms);   // se você já começou a falar, as pausas entre palavras ainda contam
         return;
       }
-      const threshold = Math.max(0.02, (floor / Math.max(1, floorN)) * 3);
+      // Teto no limiar: voz de verdade passa dele mesmo em quarto barulhento ou com a fala já em curso.
+      const threshold = Math.min(0.035, Math.max(0.006, floor * 3));
       if (rms > threshold) {
         spoke = true;
         speechMs += POLL_MS;
@@ -148,6 +166,7 @@ export class Mic {
     this.active = false;
     this._finish = this._cancel = null;
 
+    stats.speechMs = speechMs;
     if (cancelled || speechMs < MIN_SPEECH_MS || !chunks.length) return null;
     const blob = new Blob(chunks, { type: rec.mimeType || mimeType || 'audio/webm' });
     return { buffer: await blob.arrayBuffer(), mime: blob.type };

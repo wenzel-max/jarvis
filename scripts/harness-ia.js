@@ -155,6 +155,19 @@ app.whenReady().then(async () => {
   await sleep(700);
   check('Esc cancela a escuta', (await state(win)) === 'idle' && (await js(win, "document.querySelector('#ask-mic').textContent")) === 'Falar' && heard.length === 2, `${await state(win)} heard=${heard.length}`);
 
+  // 7b) botão "Testar microfone" nos Ajustes: abre, mede por 4 s e explica o resultado
+  await js(win, "document.querySelector('#btn-settings').click()");
+  await sleep(400);
+  await js(win, "document.querySelector('#btn-mic-test').click()");
+  await sleep(600);
+  check('teste do microfone mostra "Fale agora"', (await js(win, "document.querySelector('#btn-mic-test').textContent")) === 'Fale agora…');
+  await sleep(5000);
+  const micMsg = await js(win, "document.querySelector('#mic-msg').textContent");
+  check('teste do microfone informa o nível medido', /nível máximo \d+%/.test(micMsg), micMsg);
+  check('botão volta ao normal e estado ocioso', (await js(win, "document.querySelector('#btn-mic-test').textContent")) === 'Testar microfone' && (await state(win)) === 'idle');
+  await js(win, "document.querySelector('#settings-close').click()");
+  await sleep(300);
+
   // 8) microfone bloqueado no Windows
   await js(win, "(() => { navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error('negado'), { name: 'NotAllowedError' })); })()");
   await js(win, "document.querySelector('#ask-mic').click()");
