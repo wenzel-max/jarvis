@@ -16,7 +16,7 @@ export function micErrorMessage(err) {
     case 'OverconstrainedError':
       return 'Não encontrei nenhum microfone. Conecte um e tente de novo.';
     case 'NotReadableError':
-      return 'Não consegui abrir o microfone. Feche programas que possam estar usando, como Discord, Teams ou chamadas no navegador, e confira em Configurações, Sistema, Som, se o microfone certo está selecionado.';
+      return `Não consegui abrir o microfone, mesmo tentando todas as formas. Feche programas que possam estar usando, como Discord, Teams ou chamadas no navegador. Detalhe técnico: ${err.message || 'sem detalhe'}`;
     default:
       return 'Não consegui usar o microfone. Tente de novo.';
   }
@@ -31,19 +31,47 @@ export class Mic {
   }
 
   /**
-   * Abre o microfone. Alguns drivers recusam os filtros de áudio do navegador
-   * (NotReadableError); nesse caso tenta de novo com o microfone "cru".
+   * Abre o microfone. Alguns drivers (ex.: "Grupo de microfones" da Intel Smart Sound) recusam
+   * a configuração padrão do navegador com NotReadableError, então tenta, em ordem: filtros de
+   * áudio, microfone cru, mono e cada dispositivo de entrada individualmente.
    */
   async _open() {
+    const gum = (audio) => navigator.mediaDevices.getUserMedia({ audio });
+    const attempts = [
+      { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      true,
+      { channelCount: 1 },
+    ];
+    let firstError = null;
+    const tryAll = async (list) => {
+      for (const constraints of list) {
+        try {
+          return await gum(constraints);
+        } catch (err) {
+          firstError ??= err;
+          // Permissão negada ou falta de dispositivo não melhoram com outra configuração.
+          if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') throw err;
+          console.warn('[microfone] tentativa recusada:', err?.name, err?.message);
+        }
+      }
+      return null;
+    };
+
+    let stream = await tryAll(attempts);
+    if (stream) return stream;
+
+    // Mesmo problema no dispositivo padrão: experimenta os outros, um a um.
+    let devices = [];
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-    } catch (err) {
-      if (err?.name !== 'NotReadableError' && err?.name !== 'OverconstrainedError') throw err;
-      console.warn('[microfone] filtros recusados, tentando sem eles:', err.name);
-      return navigator.mediaDevices.getUserMedia({ audio: true });
+      devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput' && d.deviceId);
+    } catch { /* sem lista, vale o erro original */ }
+    const seen = new Set();
+    const others = devices.filter((d) => !seen.has(d.deviceId) && seen.add(d.deviceId)).slice(0, 6);
+    for (const d of others) {
+      stream = await tryAll([{ deviceId: { exact: d.deviceId } }, { deviceId: { exact: d.deviceId }, channelCount: 1 }]);
+      if (stream) return stream;
     }
+    throw firstError ?? new Error('Nenhum microfone disponível.');
   }
 
   /** Para de gravar agora e entrega o que foi dito até aqui. */
