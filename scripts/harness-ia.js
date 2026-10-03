@@ -158,6 +158,11 @@ app.whenReady().then(async () => {
   // 7b) botão "Testar microfone" nos Ajustes: abre, mede por 4 s e explica o resultado
   await js(win, "document.querySelector('#btn-settings').click()");
   await sleep(400);
+  await js(win, "document.querySelector('#set-mic-compat').click()");
+  await sleep(300);
+  check('modo de compatibilidade salva e oferece reiniciar', settings.micCompat === true && !(await js(win, "document.querySelector('#compat-restart').hidden")), String(settings.micCompat));
+  await js(win, "document.querySelector('#set-mic-compat').click()");
+  await sleep(200);
   check('seletor de microfone tem a opção automática', /^Automático/.test(await js(win, "document.querySelector('#set-mic option').textContent")));
   await js(win, "document.querySelector('#btn-mic-test').click()");
   await sleep(600);

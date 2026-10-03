@@ -70,6 +70,11 @@
         <label class="field"><span>Microfone</span>
           <select id="set-mic"></select>
         </label>
+        <label class="check"><input id="set-mic-compat" type="checkbox"><span>Modo de compatibilidade do microfone</span></label>
+        <p class="hint">Ligue se o Jarvis não conseguir abrir o microfone do notebook (erro "Could not start audio source"). Precisa reiniciar o Jarvis.</p>
+        <div id="compat-restart" class="row" hidden>
+          <button id="btn-relaunch" type="button" class="btn">Reiniciar o Jarvis agora</button>
+        </div>
         <div class="row wrap">
           <button id="btn-sample" type="button" class="btn">Ouvir amostra</button>
           <button id="btn-mic-test" type="button" class="btn">Testar microfone</button>

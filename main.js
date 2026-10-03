@@ -5,6 +5,7 @@ const settings = require('./src/settings');
 const tts = require('./src/tts');
 const feeds = require('./src/feeds');
 const ai = require('./src/ai');
+const { applyMicCompat } = require('./src/compat');
 
 const AUTOSTART_FLAG = '--autostart';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -15,6 +16,9 @@ app.setAppUserModelId('com.axl.jarvis');
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Precisa ser antes de o app ficar pronto: lê as configurações já na partida.
+  settings.init(app.getPath('userData'));
+  applyMicCompat(app, settings.get().micCompat);
   app.on('second-instance', () => {
     if (!win) return;
     if (win.isMinimized()) win.restore();
@@ -140,4 +144,9 @@ function registerIpc() {
     return win.isFullScreen();
   });
   ipcMain.handle('app:quit', () => app.quit());
+  ipcMain.handle('app:relaunch', () => {
+    // sem --autostart, para não esperar de novo o atraso de boot
+    app.relaunch({ args: process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG) });
+    app.exit(0);
+  });
 }

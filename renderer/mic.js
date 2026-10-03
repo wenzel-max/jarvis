@@ -42,6 +42,8 @@ export function describeReport(report) {
     .join('; ');
 }
 
+const COMPAT_HINT = ' Dica: em Ajustes, ligue o Modo de compatibilidade do microfone e reinicie o Jarvis.';
+
 /** Mensagens em português para os erros de acesso ao microfone. */
 export function micErrorMessage(err) {
   switch (err?.name) {
@@ -53,7 +55,7 @@ export function micErrorMessage(err) {
       return 'Não encontrei nenhum microfone. Conecte um e tente de novo.';
     case 'NotReadableError': {
       const tried = describeReport(err.report);
-      return `Não consegui abrir o microfone, mesmo tentando todas as formas. Feche programas que possam estar usando, como Discord, Teams ou chamadas no navegador.${tried ? ` Tentei: ${tried}.` : ''} Detalhe técnico: ${err.message || 'sem detalhe'}`;
+      return `Não consegui abrir o microfone, mesmo tentando todas as formas. Feche programas que possam estar usando, como Discord, Teams ou chamadas no navegador.${tried ? ` Tentei: ${tried}.` : ''} Detalhe técnico: ${err.message || 'sem detalhe'}${COMPAT_HINT}`;
     }
     default:
       return 'Não consegui usar o microfone. Tente de novo.';
@@ -68,7 +70,8 @@ export function explainNoSpeech(stats, report) {
   if (!stats) return 'Não ouvi nada. Aperte Falar e tente de novo.';
   const dev = stats.label ? `"${cleanLabel(stats.label)}"` : 'o microfone';
   const tried = describeReport(report);
-  const extra = tried ? ` Dispositivos testados: ${tried}.` : '';
+  const refused = report?.some((r) => !r.ok && !VIRTUAL.test(r.label));
+  const extra = `${tried ? ` Dispositivos testados: ${tried}.` : ''}${refused ? COMPAT_HINT : ''}`;
   if (stats.peak < 0.003) {
     const virtual = VIRTUAL.test(stats.label || '') ? ' Esse é um microfone virtual, que não capta som: escolha o microfone real em Ajustes.' : '';
     return `O Jarvis abriu ${dev}, mas só chegou silêncio (nível ${pct(stats.peak)}%).${virtual} Veja se o microfone não está mudo (tecla do notebook, Configurações, Sistema, Som, Entrada) e se o volume de entrada está alto.${extra}`;

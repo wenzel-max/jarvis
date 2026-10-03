@@ -420,6 +420,7 @@ function fillSettings() {
   $('#set-delay').value = settings.startDelaySec;
   $('#set-ai-model').value = settings.aiModel;
   $('#set-stt-model').value = settings.sttModel;
+  $('#set-mic-compat').checked = settings.micCompat;
   refreshAiStatus();
 }
 
@@ -535,6 +536,11 @@ function bindSettings() {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
   });
+  $('#set-mic-compat').addEventListener('change', async (e) => {
+    await save({ micCompat: e.target.checked });
+    $('#compat-restart').hidden = false;
+  });
+  $('#btn-relaunch').addEventListener('click', () => api.relaunch());
   $('#set-mic').addEventListener('change', (e) => save({ micLabel: e.target.value }));
   $('#btn-mic-test').addEventListener('click', async () => {
     const msg = $('#mic-msg');

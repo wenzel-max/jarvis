@@ -28,4 +28,5 @@ contextBridge.exposeInMainWorld('jarvis', {
   openLink: (url) => ipcRenderer.invoke('shell:open', url),
   setFullscreen: (on) => ipcRenderer.invoke('win:fullscreen', on),
   quit: () => ipcRenderer.invoke('app:quit'),
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
 });
