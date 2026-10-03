@@ -42,6 +42,7 @@ const curtas = [
   ['Obrigado!', 'thanks'], ['Valeu, Jarvis', 'thanks'], ['Muito obrigada.', 'thanks'], ['Perfeito', 'thanks'],
   ['Para de tocar a música', null], ['Que horas são?', null], ['Chega mais perto', null], ['', null], [undefined, null],
 ];
+curtas.push(['para de escutar', 'sleep'], ['Para de me escutar', 'sleep'], ['pode parar de ouvir', 'sleep'], ['não escute mais', 'sleep'], ['entra em modo de espera', 'sleep'], ['para de escutar por favor', 'sleep'], ['para', 'stop'], ['para a música', null]);
 for (const [texto, esperado] of curtas) assert.strictEqual(classifyShort(texto), esperado, `"${texto}"`);
 assert.strictEqual(speechKey('  Olá, Jarvis!  Tá?'), 'ola jarvis ta');
 

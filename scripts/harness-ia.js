@@ -501,6 +501,28 @@ app.whenReady().then(async () => {
   await click(win, '#settings-close');
   await sleep(300);
 
+  // ---- "para de escutar": espera até ouvir o nome de novo ----
+  const spokenZ = spoken.length;
+  sttScript.push('Jarvis, para de escutar');
+  await speakAndWait(1500, 1500);
+  await settle();
+  check('"para de escutar" confirma e entra em espera', spoken.slice(spokenZ).some((t) => /me chama quando precisar/.test(t)) && /Em espera/.test(await js(win, "document.querySelector('#status-text').textContent")), JSON.stringify(spoken.slice(spokenZ)));
+  const askedZ = asked.length, spokenZ2 = spoken.length, heardZ = heard.length;
+  sttScript.push('Que horas são agora?');
+  await speakAndWait(1200, 1500);
+  await settle();
+  check('em espera, uma pergunta sem o nome não é obedecida', asked.length === askedZ && spoken.length === spokenZ2, JSON.stringify({ asked: asked.length - askedZ, spoken: spoken.slice(spokenZ2) }));
+  check('em espera, a frase foi transcrita só para procurar o nome', heard.length === heardZ + 1);
+  sttScript.push('Jarvis, que dia é hoje?');
+  await speakAndWait(5200, 1500);
+  await settle();
+  check('em espera, trecho longo nem vai ao Whisper (poupa cota)', heard.length === heardZ + 1 && asked.length === askedZ, `${heard.length - heardZ}`);
+  sttScript.length = 0;
+  sttScript.push('Jarvis');
+  await speakAndWait(900, 1500);
+  await settle();
+  check('dizer "Jarvis" acorda ("Pois não?")', spoken.slice(spokenZ2).includes('Pois não?') && !/Em espera/.test(await js(win, "document.querySelector('#status-text').textContent")), JSON.stringify(spoken.slice(spokenZ2)));
+
   // ---- lembretes, memória, programas e música abaixando ----
   const spokenR = spoken.length;
   win.webContents.send('reminder:fire', { id: 'r1', text: 'tirar o macarrão', at: Date.now(), kind: 'lembrete', late: false });

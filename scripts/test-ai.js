@@ -221,5 +221,36 @@ async function withServer(handler, fn) {
     });
   }
 
+  // ---- limite diário: diz qual estourou, tenta outro modelo do Groq e não grava esse modelo nos Ajustes ----
+  {
+    const settings = { userName: 'Axl', city: { name: 'Natal' }, aiModel: 'llama-3.1-8b-instant', fallbackModel: 'g' };
+    const used = [];
+    const handler = (req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'llama-3.1-8b-instant' }, { id: 'llama-3.3-70b-versatile' }] })); return; }
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        const model = JSON.parse(b).model; used.push(model);
+        if (model === 'llama-3.1-8b-instant') { res.writeHead(429, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'Rate limit reached for model `llama-3.1-8b-instant` on tokens per day (TPD): Limit 500000, Used 499990. Please try again in 1h12m3.5s.' } })); return; }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sse('Respondi com outro modelo.') + 'data: [DONE]\n\n');
+      });
+    };
+    await withServer(handler, async (base) => {
+      const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: `${base}/chat/completions`, fallback: null, onSentence() {} });
+      assert.deepStrictEqual(used, ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile']);
+      assert.strictEqual(r.model, 'llama-3.1-8b-instant');   // o modelo salvo nos Ajustes não muda
+      assert.strictEqual(r.provider, 'Groq');
+    });
+    // todos limitados e sem reserva: a mensagem diz qual limite e quando volta
+    await withServer((req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'llama-3.1-8b-instant' }] })); return; }
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Rate limit reached on tokens per day (TPD). Please try again in 1h12m3.5s.' } }));
+    }, async (base) => {
+      const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: `${base}/chat/completions`, fallback: null, onSentence() {} });
+      assert.match(r.error, /limite gratuito do Groq \(limite diário de texto\)\. Volta em cerca de 1 hora e 12 minutos/);
+    });
+  }
+
   console.log('ai: todos os testes passaram');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -50,6 +50,7 @@ const STATUS = { idle: 'Pronto', listening: 'Ouvindo', thinking: 'Pensando', spe
 
 function renderStatus() {
   let base = STATUS[hud.dataset.state] ?? '';
+  if (sleeping && hud.dataset.state === 'idle') { $('#status-text').textContent = 'Em espera, diga "Jarvis" para acordar'; return; }
   if (hud.dataset.state === 'idle' && mic.running) {
     base = Date.now() < followUntil ? 'Pode continuar falando' : 'Pronto, diga "Jarvis"';
   }
@@ -332,7 +333,10 @@ async function ask(question) {
 function spokenError(error) {
   const t = error.toLowerCase();
   if (/chave do groq/.test(t)) return 'Tem um problema com a chave do Groq. Dá uma olhada nos Ajustes.';
-  if (/limite gratuito/.test(t)) return 'Atingi o limite gratuito por agora. Tenta de novo daqui a pouco.';
+  if (/limite gratuito/.test(t)) {
+    const wait = /Volta em cerca de ([^.]+)\./.exec(error)?.[1];
+    return wait ? `Atingi o limite gratuito por agora. Ele volta em cerca de ${wait}.` : 'Atingi o limite gratuito por agora. Tenta de novo daqui a pouco.';
+  }
   if (/sem conexão|internet/.test(t)) return 'Estou sem conexão com a internet.';
   if (/demorou demais/.test(t)) return 'Demorei demais para responder. Pode repetir?';
   if (/modelo/.test(t)) return 'O modelo de inteligência artificial não respondeu. Dá uma olhada nos Ajustes.';
@@ -430,6 +434,18 @@ function interrupt() {
   setState('listening');
 }
 
+// Em espera ("Jarvis, para de escutar"): nada é obedecido até ouvir o nome de novo. Só trechos curtos vão ao
+// Whisper (o nome é curto), o que poupa a cota gratuita.
+let sleeping = false;
+const SLEEP_MAX_MS = 4000;      // em espera, trechos mais longos que isso nem são transcritos
+const IDLE_MAX_MS = 12000;      // fora da conversa, falas longas demais raramente são com o Jarvis
+function setSleeping(on) {
+  sleeping = on;
+  if (on) followUntil = 0;
+  api.log('app', on ? 'em espera: só o nome "Jarvis" acorda' : 'acordou');
+  renderStatus();
+}
+
 const lastHint = { at: 0 };
 
 /** Ouviu uma frase sem o nome: avisa de leve (no máximo uma vez a cada 20 s) o que ouviu, para você saber por quê. */
@@ -444,6 +460,9 @@ function hintIgnored(text) {
 async function handleSegment(seg) {
   if (transcribing) { pendingSeg = seg; return; }
   const inConversation = Date.now() < followUntil || seg.barge;
+  // Poupa a cota do Whisper: em espera ou fora da conversa, trechos longos demais não são com o Jarvis.
+  const maxMs = sleeping ? SLEEP_MAX_MS : inConversation ? Infinity : IDLE_MAX_MS;
+  if (seg.ms > maxMs) { api.log('ouvi', `trecho de ${Math.round(seg.ms / 100) / 10} s ignorado sem transcrever (${sleeping ? 'em espera' : 'fora da conversa'}, poupa a cota)`); return; }
   // a pergunta que ele estava pensando quando você falou por cima (só vale para esta frase)
   const carry = seg.barge ? carried : null;
   if (seg.barge) carried = null;
@@ -476,6 +495,11 @@ async function handleSegment(seg) {
   }
 
   const parsed = parseCommand(reply.text);
+  if (sleeping) {
+    if (!parsed.woke) { api.log('ouvi', `em espera, ignorado: "${reply.text}"`); next(); return; }   // nem aviso na tela
+    setSleeping(false);
+    if (settings.earcons) playEarcon('on');
+  }
   if (!parsed.woke && !inConversation) {                             // conversa ao redor, ou o nome não foi entendido
     api.log('ouvi', `ignorado (sem "Jarvis"): "${reply.text}"`);
     hintIgnored(reply.text);
@@ -504,6 +528,11 @@ async function handleSegment(seg) {
   if (!command) {                                // só chamou o nome
     await speak(['Pois não?']);
     openFollowUp();
+    return;
+  }
+  if (short === 'sleep') {
+    await speak(['Tá bom, me chama quando precisar.']);
+    setSleeping(true);
     return;
   }
   if (short === 'stop') { openFollowUp(); return; }                 // "para", "chega": fica quieto, ouvindo

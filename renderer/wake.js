@@ -71,15 +71,18 @@ export const speechKey = (s) => String(s ?? '').toLowerCase().normalize('NFD').r
   .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
 const STOP_WORDS = /^(para|pare|parar|chega|chega ai|silencio|calma|espera|espere|cancela|cancelar|esquece|esqueca|deixa|deixa pra la|deixa quieto|deixa pra la jarvis|nada|nao|nao precisa|ok|certo|ta bom|ta|beleza|tudo bem|entendi|isso|isso mesmo|uhum|aham|hum)$/;
+// "para de escutar": o Jarvis entra em espera e só volta a obedecer quando ouvir o nome de novo
+const SLEEP = /^(pode |por favor )?(para|pare|parar|chega) de (me )?(escutar|ouvir)( por favor)?$|^(nao|para de) (me )?(escute|ouca|escutar|ouvir) mais$|^(entra|entre|entrar|fica|fique) (em )?modo (de )?(espera|escuta desligada)$|^(vai|va) (dormir|descansar)$/;
 const THANKS = /^(obrigado|obrigada|muito obrigado|muito obrigada|valeu|brigado|brigada|show|legal|perfeito|otimo|massa)( jarvis)?$/;
 
 /**
  * Frases curtas que não precisam da IA: "para", "chega" (calar e ficar quieto) e "obrigado" (resposta rápida).
- * Devolve 'stop', 'thanks' ou null.
+ * Devolve 'sleep', 'stop', 'thanks' ou null.
  */
 export function classifyShort(command) {
   const k = speechKey(command);
   if (!k) return null;
+  if (SLEEP.test(k)) return 'sleep';
   if (THANKS.test(k)) return 'thanks';
   if (STOP_WORDS.test(k)) return 'stop';
   return null;

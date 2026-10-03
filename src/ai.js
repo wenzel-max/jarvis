@@ -151,10 +151,40 @@ function systemPrompt({ userName, city, capabilities = [], memory = '' }) {
 }
 
 /** Traduz uma resposta de erro do Groq em mensagem em português; marca erros de modelo. */
+/** "8m3.5s" -> "8 minutos"; "1h2m" -> "1 hora e 2 minutos". */
+function humanWait(raw) {
+  const h = Number(/(\d+)h/.exec(raw)?.[1] ?? 0), m = Number(/(\d+)m(?!s)/.exec(raw)?.[1] ?? 0), s = Number(/([\d.]+)s/.exec(raw)?.[1] ?? 0);
+  const parts = [];
+  if (h) parts.push(`${h} ${h === 1 ? 'hora' : 'horas'}`);
+  if (m) parts.push(`${m} ${m === 1 ? 'minuto' : 'minutos'}`);
+  if (!h && !m) parts.push(`${Math.max(1, Math.ceil(s))} segundos`);
+  return parts.slice(0, 2).join(' e ');
+}
+
+/** Qual limite gratuito estourou e quando volta, a partir do texto do erro 429 do Groq. */
+function describeLimit(message) {
+  const m = message || '';
+  const kind = /tokens per day|\bTPD\b/i.test(m) ? 'o limite diário de texto'
+    : /requests per day|\bRPD\b/i.test(m) ? 'o limite diário de pedidos'
+    : /audio seconds per day|\bASD\b/i.test(m) ? 'o limite diário de áudio'
+    : /audio seconds per hour|\bASH\b/i.test(m) ? 'o limite de áudio por hora'
+    : /tokens per minute|\bTPM\b/i.test(m) ? 'o limite por minuto de texto'
+    : /requests per minute|\bRPM\b/i.test(m) ? 'o limite de pedidos por minuto' : '';
+  const retry = /try again in ([0-9hms.]+)/i.exec(m)?.[1];
+  return { kind, wait: retry ? humanWait(retry) : '' };
+}
+
 async function throwHttpError(res, model, name = 'Groq') {
   if (res.status === 429 || res.status >= 500) {   // o provedor está limitado ou fora do ar: vale tentar o reserva
-    const err = new Error(res.status === 429 ? httpErrors(name)[429] : `O ${name} respondeu com erro ${res.status}. Tente de novo em instantes.`);
+    let text = `O ${name} respondeu com erro ${res.status}. Tente de novo em instantes.`;
+    if (res.status === 429) {
+      const { message } = await errorDetail(res);
+      const { kind, wait } = describeLimit(message);
+      text = `Atingi o limite gratuito do ${name}${kind ? ` (${kind.replace(/^o /, '')})` : ''}.${wait ? ` Volta em cerca de ${wait}.` : ' Tente de novo em alguns minutos.'}`;
+    }
+    const err = new Error(text);
     err.canFallback = true;
+    err.isRateLimit = res.status === 429;
     throw err;
   }
   if (httpErrors(name)[res.status]) throw new Error(httpErrors(name)[res.status]);
@@ -176,7 +206,7 @@ async function throwHttpError(res, model, name = 'Groq') {
 async function errorDetail(res) {
   try {
     const j = await res.json();
-    return { message: String(j.error?.message ?? '').slice(0, 200), code: String(j.error?.code ?? '') };
+    return { message: String(j.error?.message ?? '').slice(0, 400), code: String(j.error?.code ?? '') };
   } catch {
     return { message: '', code: '' };
   }
@@ -324,6 +354,8 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       { role: 'user', content: q },
     ];
     let model = settings.aiModel;
+    let persistModel = settings.aiModel;   // só o modelo do Groq que de fato serve é gravado nos Ajustes
+    let altTried = false;
     let provider = { key, endpoint, name: 'Groq' };
     // Reserva (Gemini): só entra se a chave existe e o Groq estiver limitado, fora do ar ou sem conexão.
     const fb = fallbackOverride ?? (() => { const k = readKey('gemini'); return k ? { key: k, endpoint: GEMINI_ENDPOINT, name: 'Gemini', model: settings.fallbackModel } : null; })();
@@ -337,7 +369,18 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       const run = () => streamTurn({ key: provider.key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : 'auto', signal, onSentence: say, endpoint: provider.endpoint, name: provider.name });
       try {
         return await run();
-      } catch (e) {
+      } catch (err) {
+        let e = err;
+        // Cada modelo do Groq tem a sua própria cota: ao estourar uma, tenta outro modelo da conta antes do Gemini.
+        if (e.isRateLimit && provider.name === 'Groq' && !altTried && !emitted && !ctrl.signal.aborted) {
+          altTried = true;
+          const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint }).catch(() => null);
+          if (alt && alt !== model) {
+            onFallback?.(`${e.message} Usando o modelo ${alt}.`);
+            model = alt;
+            try { return await run(); } catch (e2) { if (!(e2.canFallback && fb && !emitted && !ctrl.signal.aborted)) throw e2; e = e2; }
+          }
+        }
         if (e.canFallback && fb && provider.name === 'Groq' && !emitted && !ctrl.signal.aborted) {
           provider = fb;
           model = fb.model || 'gemini-2.5-flash';
@@ -350,6 +393,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
         const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint });
         if (!alt) throw e;
         model = alt;
+        persistModel = alt;
         return run();
       }
     };
@@ -383,7 +427,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       }
     }
     if (!spoken) return { error: 'O Groq não devolveu resposta. Tente de novo.' };
-    return { text: spoken, model, provider: provider.name };
+    return { text: spoken, model: persistModel, provider: provider.name };
   } catch (e) {
     if (ctrl.signal.aborted) {
       const timedOut = ctrl.signal.reason?.message === 'timeout';
