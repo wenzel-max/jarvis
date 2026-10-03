@@ -1,11 +1,12 @@
 name: Instalador
 
-# Para lançar uma versão: aumente "version" no package.json, faça commit e crie a tag, por exemplo
-#   git tag v0.2.0 && git push origin v0.2.0
+# Para lançar uma versão: aumente "version" no package.json, faça commit e rode este fluxo (aba Actions > Instalador > Run workflow)
+# ou crie uma tag:  git tag v0.2.0 && git push origin v0.2.0
 # O instalador (.exe) aparece em Releases. Com o repositório público, o Jarvis instalado se atualiza sozinho.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:   # também dá para rodar pelo botão "Run workflow" na aba Actions
 
 jobs:
   windows:

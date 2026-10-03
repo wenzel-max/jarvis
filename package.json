@@ -38,7 +38,7 @@
       "target": "nsis",
       "icon": "build/icon.ico"
     },
-    "publish": [{ "provider": "github", "owner": "wenzel-max", "repo": "jarvis" }],
+    "publish": [{ "provider": "github", "owner": "wenzel-max", "repo": "jarvis", "releaseType": "release" }],
     "nsis": {
       "oneClick": true,
       "perMachine": false
