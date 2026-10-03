@@ -25,6 +25,10 @@
 
     <section class="center">
       <p id="caption" class="caption" aria-live="polite"></p>
+      <form id="ask-form" class="ask" autocomplete="off">
+        <input id="ask-input" type="text" maxlength="500" placeholder="Pergunte alguma coisa ao Jarvis" aria-label="Pergunte ao Jarvis">
+        <button id="ask-send" type="submit" class="btn">Perguntar</button>
+      </form>
     </section>
 
     <section class="side side-right" aria-label="Notícias">
@@ -90,6 +94,22 @@
         <h3>Notícias</h3>
         <label class="field"><span>Fontes, uma por linha: Nome | endereço do feed RSS</span>
           <textarea id="set-feeds" rows="4" spellcheck="false"></textarea>
+        </label>
+      </section>
+
+      <section class="group">
+        <h3>Inteligência artificial</h3>
+        <p id="ai-status" class="hint"></p>
+        <label class="field"><span>Chave do Groq (gratuita)</span>
+          <input id="set-ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
+        </label>
+        <div class="row wrap">
+          <button id="btn-ai-key" type="button" class="btn">Salvar chave</button>
+          <button id="btn-ai-getkey" type="button" class="btn btn-quiet">Criar chave grátis</button>
+        </div>
+        <p id="ai-msg" class="hint" hidden></p>
+        <label class="field"><span>Modelo</span>
+          <input id="set-ai-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
         </label>
       </section>
 

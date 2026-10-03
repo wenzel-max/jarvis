@@ -94,7 +94,8 @@ export class Voice {
   }
 
   /**
-   * Fala uma lista de frases em sequência. Enquanto uma toca, a próxima já é preparada,
+   * Fala frases em sequência. `sentences` pode ser uma lista ou um iterável assíncrono
+   * (resposta da IA chegando aos poucos). Enquanto uma frase toca, a próxima já é preparada,
    * então quase não há pausa entre elas.
    */
   async speakSequence(sentences, { settings, onSentence } = {}) {
@@ -102,25 +103,32 @@ export class Voice {
     const token = this._token;
     this.speaking = true;
     this.usingFallback = false;
+    const it = (sentences[Symbol.asyncIterator] ?? sentences[Symbol.iterator]).call(sentences);
     // cada frase pode ser texto simples ou { show, say }: o que aparece na tela x o que é falado
-    const say = (i) => (typeof sentences[i] === 'string' ? sentences[i] : sentences[i].say);
-    const show = (i) => (typeof sentences[i] === 'string' ? sentences[i] : sentences[i].show);
     // depois da primeira falha, as frases seguintes só usam o cache em disco (sem esperar a rede)
-    const prep = (i) => this._fetch(say(i), settings, this.usingFallback).catch((e) => { console.warn('[voz]', e.message); return null; });
+    const pull = async () => {
+      const r = await it.next();
+      if (r.done) return null;
+      const say = typeof r.value === 'string' ? r.value : r.value.say;
+      const show = typeof r.value === 'string' ? r.value : r.value.show;
+      const url = await this._fetch(say, settings, this.usingFallback).catch((e) => { console.warn('[voz]', e.message); return null; });
+      return { say, show, url };
+    };
 
-    let next = prep(0);
-    for (let i = 0; i < sentences.length; i++) {
-      const url = await next;
-      if (token !== this._token) { if (url) URL.revokeObjectURL(url); return false; }
-      if (!url && !this.usingFallback) { this.usingFallback = true; this.onFallback?.(); }
-      if (i + 1 < sentences.length) next = prep(i + 1);
-      onSentence?.(show(i), i);
-      if (url) {
+    let next = pull();
+    for (let i = 0; ; i++) {
+      const cur = await next;
+      if (token !== this._token) { if (cur?.url) URL.revokeObjectURL(cur.url); return false; }
+      if (!cur) break;
+      if (!cur.url && !this.usingFallback) { this.usingFallback = true; this.onFallback?.(); }
+      next = pull();
+      onSentence?.(cur.show, i);
+      if (cur.url) {
         this._fake = false;
-        await this._play(url, token);
+        await this._play(cur.url, token);
       } else {
         this._fake = true;
-        await this._speakSystem(say(i), settings, token);
+        await this._speakSystem(cur.say, settings, token);
       }
     }
     if (token === this._token) { this.speaking = false; this._fake = false; }

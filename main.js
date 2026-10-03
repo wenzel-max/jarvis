@@ -4,6 +4,7 @@ const path = require('node:path');
 const settings = require('./src/settings');
 const tts = require('./src/tts');
 const feeds = require('./src/feeds');
+const ai = require('./src/ai');
 
 const AUTOSTART_FLAG = '--autostart';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,6 +42,7 @@ async function boot() {
   Menu.setApplicationMenu(null);
   settings.init(app.getPath('userData'));
   tts.init(path.join(app.getPath('userData'), 'tts-cache'));
+  ai.init(app.getPath('userData'));
   applyAutostart(settings.get());
   registerIpc();
 
@@ -97,6 +99,18 @@ function registerIpc() {
   ipcMain.handle('weather:get', (_e, lat, lon) => feeds.getWeather(lat, lon));
   ipcMain.handle('geo:search', (_e, q) => feeds.searchCity(q));
   ipcMain.handle('news:get', (_e, list) => feeds.getNews(list));
+  ipcMain.handle('ai:ask', (e, req) => {
+    const id = req && req.id;
+    return ai.ask(req || {}, {
+      settings: settings.get(),
+      onSentence: (text) => { if (!e.sender.isDestroyed()) e.sender.send('ai:sentence', { id, text }); },
+    });
+  });
+  ipcMain.handle('ai:cancel', () => ai.cancel());
+  ipcMain.handle('ai:key-status', () => ({ hasKey: ai.hasKey() }));
+  ipcMain.handle('ai:key-set', (_e, key) => {
+    try { ai.setKey(key); return { ok: true, hasKey: ai.hasKey() }; } catch (err) { return { ok: false, error: err.message }; }
+  });
   ipcMain.handle('shell:open', (_e, url) => {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) return shell.openExternal(url);
   });

@@ -17,6 +17,7 @@ function el(tag, cls, text) {
 const hud = $('#hud');
 const caption = $('#caption');
 let settings = await api.getSettings();
+let chat = [];            // últimas perguntas e respostas, para a IA entender "e amanhã?"
 let weather = null;
 let news = [];
 let speakId = 0;
@@ -161,14 +162,18 @@ function loop(name, fn, okMs, failMs) {
 // ---------------------------------------------------------------------------
 // Fala e resumo do dia
 // ---------------------------------------------------------------------------
-async function speak(sentences) {
+async function speak(sentences, { startState = 'speaking' } = {}) {
   const id = ++speakId;
-  setState('speaking');
+  setState(startState);
   $('#btn-stop').hidden = false;
   try {
     await voice.speakSequence(sentences, {
       settings,
-      onSentence: (text) => { caption.textContent = text; },
+      onSentence: (text) => {
+        if (id !== speakId) return;
+        if (hud.dataset.state !== 'speaking') setState('speaking');
+        caption.textContent = text;
+      },
     });
   } finally {
     if (id === speakId) {
@@ -179,18 +184,97 @@ async function speak(sentences) {
   }
 }
 
+/** Interrompe a pergunta em andamento (IA e fila de frases), se houver. */
+function abortAsk() {
+  api.cancelAi();
+  currentQueue?.end();
+}
+
 function stopSpeaking() {
   speakId++;
+  abortAsk();
   voice.stop();
   $('#btn-stop').hidden = true;
   setState('idle');
   caption.textContent = idleCaption();
 }
 
+// ---------------------------------------------------------------------------
+// Perguntas à IA
+// ---------------------------------------------------------------------------
+/** Fila de frases: a IA empurra conforme escreve e a voz puxa conforme fala. */
+function sentenceQueue() {
+  const items = [];
+  let wake = null;
+  let ended = false;
+  return {
+    push(x) { items.push(x); wake?.(); },
+    end() { ended = true; wake?.(); },
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        if (items.length) { yield items.shift(); continue; }
+        if (ended) return;
+        await new Promise((r) => { wake = r; });
+        wake = null;
+      }
+    },
+  };
+}
+
+let currentQueue = null;
+const askInput = $('#ask-input');
+const askSend = $('#ask-send');
+
+async function ask(question) {
+  voice.stop();
+  abortAsk();
+  const queue = sentenceQueue();
+  currentQueue = queue;
+  askInput.disabled = askSend.disabled = true;
+  caption.textContent = question;
+
+  const speaking = speak(queue, { startState: 'thinking' });
+  const sid = speakId;   // speak() acabou de gerar o id desta fala
+  let reply;
+  try {
+    reply = await api.askAi({ question, history: chat }, (text) => queue.push(text));
+  } catch (err) {
+    console.warn('[ia]', err);
+    reply = { error: 'Algo deu errado ao falar com a IA. Tente de novo.' };
+  }
+  queue.end();
+  if (sid === speakId && reply.text) {
+    chat = [...chat, { role: 'user', content: question }, { role: 'assistant', content: reply.text }].slice(-8);
+  }
+  // Erro antes de qualquer fala: mostra a mensagem na hora, sem esperar a voz.
+  const early = sid === speakId && !!reply.error && hud.dataset.state === 'thinking';
+  if (early) {
+    speakId++;
+    voice.stop();
+    setState('idle');
+    $('#btn-stop').hidden = true;
+  }
+  await speaking;
+  if (reply.error && (early || sid === speakId)) caption.textContent = reply.error;
+  if (currentQueue === queue) {
+    askInput.disabled = askSend.disabled = false;
+    askInput.focus();
+  }
+}
+
+$('#ask-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const q = askInput.value.trim();
+  if (!q || askInput.disabled) return;
+  askInput.value = '';
+  ask(q);
+});
+
 let firstLoad = Promise.resolve();
 
 async function runBriefing() {
   const id = ++speakId;
+  abortAsk();
   voice.stop();
   setState('thinking');
   $('#btn-brief').disabled = true;
@@ -271,6 +355,15 @@ function fillSettings() {
   $('#set-speak').checked = settings.speakOnStart;
   $('#set-fullscreen').checked = settings.fullscreen;
   $('#set-delay').value = settings.startDelaySec;
+  $('#set-ai-model').value = settings.aiModel;
+  refreshAiStatus();
+}
+
+async function refreshAiStatus() {
+  const { hasKey } = await api.aiKeyStatus();
+  $('#ai-status').textContent = hasKey
+    ? 'Chave salva com segurança neste computador. Cole outra para trocar, ou deixe vazio e salve para apagar.'
+    : 'Sem chave ainda. Crie uma chave gratuita no Groq e cole aqui para poder fazer perguntas.';
 }
 
 function openSettings() {
@@ -350,6 +443,20 @@ function bindSettings() {
   $('#set-autostart').addEventListener('change', (e) => save({ autostart: e.target.checked }));
   $('#set-speak').addEventListener('change', (e) => save({ speakOnStart: e.target.checked }));
   $('#set-fullscreen').addEventListener('change', (e) => save({ fullscreen: e.target.checked }));
+  $('#btn-ai-getkey').addEventListener('click', () => api.openLink('https://console.groq.com/keys'));
+  $('#btn-ai-key').addEventListener('click', async () => {
+    const msg = $('#ai-msg');
+    const input = $('#set-ai-key');
+    const r = await api.setAiKey(input.value);
+    msg.hidden = false;
+    msg.textContent = r.ok ? (r.hasKey ? 'Chave salva.' : 'Chave apagada.') : r.error;
+    if (r.ok) input.value = '';
+    refreshAiStatus();
+  });
+  $('#set-ai-model').addEventListener('change', async (e) => {
+    await save({ aiModel: e.target.value });
+    e.target.value = settings.aiModel;
+  });
   $('#set-delay').addEventListener('change', (e) => save({ startDelaySec: Number(e.target.value) }));
 
   // prévia: mostra cada estado da esfera por alguns segundos
@@ -358,6 +465,7 @@ function bindSettings() {
     btn.addEventListener('click', () => {
       const state = btn.dataset.preview;
       speakId++;
+      abortAsk();
       voice.stop();
       clearTimeout(previewTimer);
       voice.simulate(state === 'speaking');
@@ -380,6 +488,9 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!drawer.hidden) closeSettings();
     else api.setFullscreen(false);
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    askInput.focus();
   } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
     drawer.hidden ? openSettings() : closeSettings();
   }
