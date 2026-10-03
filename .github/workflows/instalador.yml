@@ -20,6 +20,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # O GitHub só publica uma versão que tenha tag: cria v<version> (do package.json) se ainda não existir
+      - name: Criar a tag da versão
+        shell: bash
+        run: |
+          v="v$(node -p "require('./package.json').version")"
+          if git ls-remote --exit-code --tags origin "refs/tags/$v" >/dev/null 2>&1; then
+            echo "A tag $v já existe: aumente o version no package.json para lançar outra versão."
+          else
+            git tag "$v"
+            git push origin "$v"
+          fi
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
