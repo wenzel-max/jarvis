@@ -190,7 +190,16 @@ const hhmm = (iso) => formatClock(new Date(iso));
 
 function renderAgenda() {
   const box = $('#agenda');
-  if (!agenda?.connected) { box.hidden = true; box.replaceChildren(); return; }
+  if (!agenda?.connected) {
+    if (agenda?.needsReconnect) {
+      box.hidden = false;
+      box.replaceChildren(el('h2', null, 'Agenda'), el('p', 'muted', 'O acesso ao Google expirou. Reconecte em Ajustes.'));
+    } else {
+      box.hidden = true;
+      box.replaceChildren();
+    }
+    return;
+  }
   box.hidden = false;
   const nodes = [el('h2', null, 'Hoje na agenda')];
   if (agenda.error) {
@@ -512,6 +521,7 @@ async function runBriefing() {
   $('#btn-brief').disabled = true;
   try {
     await Promise.race([firstLoad, sleep(6000)]);
+    await Promise.race([loadAgenda(), sleep(3000)]);   // a agenda do resumo tem que ser a de agora, não a de 10 minutos atrás
     if (id !== speakId) return;
     await speak(buildBriefing({
       name: settings.userName,
@@ -622,10 +632,10 @@ async function refreshGoogleStatus() {
   $('#google-status').textContent = s.connected
     ? 'Conectado. O Jarvis lê e cria compromissos e tarefas por voz.'
     : s.needsReconnect
-      ? 'O acesso expirou. Conecte de novo para voltar a usar a agenda.'
+      ? 'O acesso expirou (em modo de teste isso acontece a cada 7 dias). Clique em "Conectar de novo": não precisa colar nada outra vez.'
       : 'Não conectado. Siga os passos abaixo e cole as credenciais para conectar.';
   $('#btn-g-disconnect').hidden = !s.connected && !s.needsReconnect;
-  $('#btn-g-connect').textContent = s.connected ? 'Conectar de novo' : 'Conectar com o Google';
+  $('#btn-g-connect').textContent = s.connected || s.needsReconnect ? 'Conectar de novo' : 'Conectar com o Google';
   return s;
 }
 
@@ -743,10 +753,11 @@ function bindSettings() {
     const clientId = $('#set-g-id').value.trim();
     const clientSecret = $('#set-g-secret').value.trim();
     msg.hidden = false;
-    if (!clientId || !clientSecret) { msg.textContent = 'Cole o ID e a chave secreta do cliente.'; return; }
+    const known = (await api.googleStatus()).hasCredentials;   // credenciais já guardadas: reconectar sem colar de novo
+    if (!known && (!clientId || !clientSecret)) { msg.textContent = 'Cole o ID e a chave secreta do cliente.'; return; }
     btn.disabled = true;
     msg.textContent = 'Abrindo o navegador para você entrar no Google…';
-    const r = await api.googleConnect({ clientId, clientSecret });
+    const r = await api.googleConnect(clientId || clientSecret ? { clientId, clientSecret } : {});
     btn.disabled = false;
     if (r.ok) {
       msg.textContent = 'Conectado!';

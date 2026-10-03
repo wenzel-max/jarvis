@@ -112,10 +112,11 @@
           <ol>
             <li>Entre em console.cloud.google.com e crie um projeto (qualquer nome).</li>
             <li>Em "APIs e serviços", ative a <b>Google Calendar API</b> e a <b>Google Tasks API</b>.</li>
-            <li>Em "Tela de consentimento OAuth" (Google Auth Platform), escolha <b>Externo</b>, preencha o nome do app e o seu e-mail e adicione o seu e-mail como usuário de teste.</li>
-            <li>Em "Público", clique em <b>Publicar app</b>. Sem isso o acesso expira a cada 7 dias.</li>
-            <li>Em "Credenciais", crie um <b>ID do cliente OAuth</b> do tipo <b>App para computador</b> e copie o ID e a chave secreta para cá.</li>
-            <li>Ao conectar, o Google avisa que o app não foi verificado: clique em <b>Avançado</b> e depois em <b>Acessar</b>. É o seu próprio app.</li>
+            <li>Em "Google Auth Platform", configure a tela de consentimento: público <b>Externo</b>, nome do app (ex.: Jarvis) e o seu e-mail.</li>
+            <li>Em <b>Público</b>, em "Usuários de teste", adicione o <b>seu e-mail do Google</b>. Deixe o app em modo <b>Teste</b>: não precisa publicar nem ter página de privacidade.</li>
+            <li>Em "Clientes", crie um <b>ID do cliente OAuth</b> do tipo <b>App para computador</b> e copie o ID e a chave secreta para cá.</li>
+            <li>Ao conectar, o Google avisa que o app não foi verificado: clique em <b>Avançado</b> e depois em <b>Acessar</b>. É o seu próprio app. Marque as duas permissões (agenda e tarefas).</li>
+            <li>Em modo de teste o acesso vale <b>7 dias</b>. Depois o Jarvis avisa e você só clica em <b>Conectar de novo</b>.</li>
           </ol>
         </details>
         <label class="field"><span>ID do cliente</span>

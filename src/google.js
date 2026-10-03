@@ -48,6 +48,11 @@ function status() {
 }
 
 async function connect({ clientId, clientSecret } = {}) {
+  // Reconectar (o acesso vence a cada 7 dias em modo de teste) não exige colar tudo de novo.
+  const prev = saved();
+  if (!clientId?.trim() && !clientSecret?.trim() && prev?.clientId && prev?.clientSecret) {
+    ({ clientId, clientSecret } = prev);
+  }
   if (!/^[\w.-]+\.apps\.googleusercontent\.com$/.test(clientId ?? '')) {
     throw new GoogleError('O ID do cliente parece errado. Ele termina com .apps.googleusercontent.com.', 'bad_client');
   }
@@ -243,7 +248,8 @@ async function completeTask(id) {
 
 /** O dia de hoje (no fuso do PC) para o painel e o resumo falado. Nunca lança. */
 async function today() {
-  if (!status().connected) return { connected: false, events: [], tasks: [] };
+  const st = status();
+  if (!st.connected) return { connected: false, needsReconnect: st.needsReconnect, events: [], tasks: [] };
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);

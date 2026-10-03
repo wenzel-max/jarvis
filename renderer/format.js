@@ -105,6 +105,9 @@ export function buildBriefing({ name, nameSpoken, now, weather, cityName, news, 
     out.push('Não consegui consultar o clima agora.');
   }
 
+  if (agenda?.needsReconnect) {
+    out.push('O acesso ao Google expirou. Conecte de novo nos Ajustes para eu voltar a ler a sua agenda.');
+  }
   if (agenda?.connected && !agenda.error) {
     const events = agenda.events ?? [];
     // só o que ainda vai acontecer (ou o dia inteiro); o que já passou hoje não interessa

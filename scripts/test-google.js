@@ -108,7 +108,7 @@ function browser(mode = 'ok') {
   start('ok');
   assert.deepStrictEqual(google.status(), { hasCredentials: false, connected: false, needsReconnect: false });
   await assert.rejects(google.listEvents({ timeMin: '2026-10-05T00:00:00', timeMax: '2026-10-06T00:00:00' }), /não está conectado/);
-  assert.deepStrictEqual(await google.today(), { connected: false, events: [], tasks: [] });
+  assert.deepStrictEqual(await google.today(), { connected: false, needsReconnect: false, events: [], tasks: [] });
 
   // credenciais com cara de erradas nem abrem o navegador
   await assert.rejects(google.connect({ clientId: 'abc', clientSecret: CLIENT_SECRET }), /ID do cliente/);
@@ -203,8 +203,17 @@ function browser(mode = 'ok') {
   await assert.rejects(google.listTasks(), /expirou. Reconecte/);
   assert.strictEqual(google.status().needsReconnect, true);
   assert.strictEqual(google.status().connected, false);
-  assert.match((await google.today()).events.length === 0 ? 'ok' : 'x', /ok/);
+  assert.deepStrictEqual(await google.today(), { connected: false, needsReconnect: true, events: [], tasks: [] });
+  // reconectar sem colar as credenciais de novo: usa as que já estão no cofre
   start('ok');
+  assert.strictEqual(google.status().hasCredentials, true);
+  await google.connect();
+  assert.strictEqual(google.status().connected, true);
+  assert.strictEqual(google.status().needsReconnect, false);
+  assert.strictEqual(secrets.get('google').clientSecret, CLIENT_SECRET);
+  // sem credenciais guardadas, continua exigindo
+  secrets.remove('google');
+  await assert.rejects(google.connect(), /ID do cliente/);
   await google.connect({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
   assert.strictEqual(google.status().connected, true);
 

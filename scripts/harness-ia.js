@@ -18,6 +18,7 @@ const settings = {
 };
 let aiMode = 'ok';
 let googleOn = false;
+let googleExpired = false;
 let spotifyOn = false;
 let mediaError = '';
 const mediaCalls = [];
@@ -66,15 +67,17 @@ function fakeIpc() {
     if (next === undefined) return { error: 'Não entendi o que você disse. Tente falar mais perto do microfone.' };
     return typeof next === 'string' ? { text: next, model: 'whisper-large-v3-turbo' } : next;
   });
-  ipcMain.handle('google:status', () => ({ hasCredentials: googleOn, connected: googleOn, needsReconnect: false }));
+  ipcMain.handle('google:status', () => ({ hasCredentials: googleOn || googleExpired, connected: googleOn, needsReconnect: googleExpired }));
   ipcMain.handle('google:connect', async (_e, creds) => {
     googleCalls.push(creds);
+    if (googleExpired && !creds?.clientId) { googleOn = true; googleExpired = false; return { ok: true, hasCredentials: true, connected: true, needsReconnect: false }; }
     if (!/apps\.googleusercontent\.com$/.test(creds?.clientId ?? '')) return { ok: false, error: 'O ID do cliente parece errado. Ele termina com .apps.googleusercontent.com.' };
     googleOn = true;
     return { ok: true, hasCredentials: true, connected: true, needsReconnect: false };
   });
   ipcMain.handle('google:disconnect', () => { googleOn = false; return { ok: true, connected: false }; });
   ipcMain.handle('agenda:today', () => {
+    if (googleExpired) return { connected: false, needsReconnect: true, events: [], tasks: [] };
     if (!googleOn) return { connected: false, events: [], tasks: [] };
     const at = (H, M = 0) => { const d = new Date(); d.setHours(H, M, 0, 0); return d.toISOString(); };
     return {
@@ -358,6 +361,25 @@ app.whenReady().then(async () => {
   await settle(60000);
   const dito = spoken.slice(spokenBrief);
   check('o resumo falado inclui a agenda e as tarefas', dito.some((t) => /Você tem 2 compromissos hoje/.test(t)) && dito.some((t) => /Reunião com o time, às 23 e 30/.test(t)) && dito.some((t) => /2 tarefas pendentes/.test(t)), JSON.stringify(dito.filter((t) => /compromiss|tarefa|às/.test(t))));
+  // o acesso vence (modo de teste do Google): aviso no painel, no resumo, e reconexão sem colar nada
+  googleOn = false; googleExpired = true;
+  await js(win, 'document.querySelector("#agenda").hidden = true');
+  await click(win, '#btn-settings');
+  await sleep(400);
+  check('acesso expirado: Ajustes explica e oferece "Conectar de novo"', /expirou/.test(await js(win, "document.querySelector('#google-status').textContent")) && (await js(win, "document.querySelector('#btn-g-connect').textContent")) === 'Conectar de novo');
+  await click(win, '#settings-close');
+  await sleep(300);
+  const spokenX = spoken.length;
+  await click(win, '#btn-brief');
+  await settle(60000);
+  check('o resumo falado avisa que o acesso ao Google expirou', spoken.slice(spokenX).some((t) => /acesso ao Google expirou/.test(t)), JSON.stringify(spoken.slice(spokenX).filter((t) => /Google/.test(t))));
+  await click(win, '#btn-settings');
+  await sleep(300);
+  await click(win, '#btn-g-connect');                  // campos vazios: reaproveita as credenciais guardadas
+  await sleep(700);
+  check('reconectar com os campos vazios funciona', googleOn && !googleExpired && /Conectado/.test(await js(win, "document.querySelector('#google-status').textContent")));
+  await click(win, '#settings-close');
+  await sleep(300);
   await click(win, '#btn-settings');
   await sleep(300);
   await click(win, '#btn-g-disconnect');
