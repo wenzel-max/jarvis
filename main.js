@@ -104,6 +104,10 @@ function registerIpc() {
     return ai.ask(req || {}, {
       settings: settings.get(),
       onSentence: (text) => { if (!e.sender.isDestroyed()) e.sender.send('ai:sentence', { id, text }); },
+    }).then((reply) => {
+      // Se o modelo configurado foi trocado por outro que funcionou, guarda o novo.
+      if (reply.model && reply.model !== settings.get().aiModel) settings.update({ aiModel: reply.model });
+      return reply;
     });
   });
   ipcMain.handle('ai:cancel', () => ai.cancel());

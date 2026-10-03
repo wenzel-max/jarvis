@@ -2,7 +2,7 @@
 // Testa src/ai.js sem rede: servidor local que imita o streaming (SSE) da API.
 const http = require('node:http');
 const assert = require('node:assert');
-const { streamChat, Sentencer, cleanForSpeech } = require('../src/ai');
+const { streamChat, ask, Sentencer, cleanForSpeech } = require('../src/ai');
 
 const sse = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 
@@ -50,6 +50,60 @@ async function withServer(handler, fn) {
     setTimeout(() => ctrl.abort(), 100);
     await assert.rejects(streamChat({ key: 'k', model: 'm', messages: [], signal: ctrl.signal, onSentence() {}, endpoint }));
   });
+
+  // modelo recusado: descobre outro na lista da conta, tenta de novo e informa qual funcionou
+  {
+    const used = [];
+    await withServer((req, res) => {
+      if (req.url.endsWith('/models')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ data: [{ id: 'whisper-large-v3' }, { id: 'llama-guard-4-12b' }, { id: 'meta-llama/llama-4-scout' }, { id: 'llama-3.1-8b-novo' }] }));
+      }
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        const model = JSON.parse(raw).model;
+        used.push(model);
+        if (model === 'llama-3.1-8b-instant') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: { message: 'The model `llama-3.1-8b-instant` has been decommissioned', code: 'model_decommissioned' } }));
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sse('Tudo certo por aqui, Axl.') + 'data: [DONE]\n\n');
+      });
+    }, async (base) => {
+      const got = [];
+      const reply = await ask({ question: 'Oi?', history: [] }, {
+        settings: { aiModel: 'llama-3.1-8b-instant', userName: 'Axl', city: { name: 'Natal' } },
+        onSentence: (t) => got.push(t), endpoint: `${base}/openai/v1/chat/completions`, key: 'gsk_teste',
+      });
+      assert.deepStrictEqual(used, ['llama-3.1-8b-instant', 'llama-3.1-8b-novo']);
+      assert.strictEqual(reply.model, 'llama-3.1-8b-novo');
+      assert.strictEqual(reply.text, 'Tudo certo por aqui, Axl.');
+      assert.deepStrictEqual(got, ['Tudo certo por aqui, Axl.']);
+    });
+
+    // sem alternativa na lista: mantém a mensagem pedindo para trocar o modelo
+    await withServer((req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200); return res.end(JSON.stringify({ data: [{ id: 'whisper-large-v3' }] })); }
+      res.writeHead(404); res.end(JSON.stringify({ error: { message: 'model not found', code: 'model_not_found' } }));
+    }, async (base) => {
+      const reply = await ask({ question: 'Oi?' }, {
+        settings: { aiModel: 'x', userName: 'Axl', city: { name: 'Natal' } },
+        onSentence() {}, endpoint: `${base}/openai/v1/chat/completions`, key: 'gsk_teste',
+      });
+      assert.match(reply.error, /não aceitou o modelo "x"/);
+    });
+
+    // 400 que não é do modelo mostra o motivo
+    await withServer((req, res) => { res.writeHead(400); res.end(JSON.stringify({ error: { message: 'max_tokens inválido', code: 'invalid_request' } })); }, async (base) => {
+      const reply = await ask({ question: 'Oi?' }, {
+        settings: { aiModel: 'x', userName: 'Axl', city: { name: 'Natal' } },
+        onSentence() {}, endpoint: `${base}/openai/v1/chat/completions`, key: 'gsk_teste',
+      });
+      assert.match(reply.error, /recusou o pedido: max_tokens inválido/);
+    });
+  }
 
   console.log('ai: todos os testes passaram');
 })().catch((e) => { console.error(e); process.exit(1); });

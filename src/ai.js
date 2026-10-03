@@ -118,6 +118,43 @@ function systemPrompt({ userName, city }) {
   ].join(' ');
 }
 
+async function errorDetail(res) {
+  try {
+    const j = await res.json();
+    return { message: String(j.error?.message ?? '').slice(0, 200), code: String(j.error?.code ?? '') };
+  } catch {
+    return { message: '', code: '' };
+  }
+}
+
+// Modelos que não servem para conversa por texto.
+const NOT_CHAT = /whisper|tts|speech|guard|safeguard|embed|orpheus|playai|moderation/i;
+// Ordem de preferência: pequenos e rápidos primeiro (voz pede resposta ágil).
+const PREFERRED = [/llama.*8b.*instant/i, /8b/i, /instant|flash|mini/i, /llama-3\.3-70b/i, /llama/i, /./];
+
+/** Lista os modelos de conversa que a conta tem acesso. */
+async function listModels({ key, signal, endpoint = ENDPOINT }) {
+  const res = await fetch(endpoint.replace(/\/chat\/completions$/, '/models'), {
+    signal,
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json();
+  return (j.data ?? []).map((m) => m.id).filter((id) => typeof id === 'string' && !NOT_CHAT.test(id)).sort();
+}
+
+/** Escolhe outro modelo da lista para substituir um que o Groq recusou. */
+async function pickModel({ key, bad, signal, endpoint }) {
+  try {
+    const ids = (await listModels({ key, signal, endpoint })).filter((id) => id !== bad);
+    for (const re of PREFERRED) {
+      const hit = ids.find((id) => re.test(id));
+      if (hit) return hit;
+    }
+  } catch { /* sem lista, a mensagem de erro original orienta o usuário */ }
+  return null;
+}
+
 /**
  * Faz a pergunta e entrega a resposta em frases (onSentence) conforme chegam.
  * Devolve o texto completo. `endpoint` existe só para testes.
@@ -137,9 +174,13 @@ async function streamChat({ key, model, messages, signal, onSentence, endpoint =
   }
   if (!res.ok) {
     if (HTTP_ERRORS[res.status]) throw new Error(HTTP_ERRORS[res.status]);
-    if (res.status === 400 || res.status === 404) {
-      throw new Error(`O Groq não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
+    const { message, code } = await errorDetail(res);
+    if (res.status === 404 || /model/i.test(`${code} ${message}`)) {
+      const err = new Error(`O Groq não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
+      err.isModelError = true;
+      throw err;
     }
+    if (res.status === 400) throw new Error(`O Groq recusou o pedido${message ? `: ${message}` : '.'}`);
     throw new Error(`O Groq respondeu com erro ${res.status}. Tente de novo em instantes.`);
   }
 
@@ -179,10 +220,10 @@ function sanitizeHistory(history) {
 }
 
 /** Entrada usada pelo IPC. Nunca lança: devolve { text } ou { error, aborted }. */
-async function ask({ question, history }, { settings, onSentence }) {
+async function ask({ question, history }, { settings, onSentence, endpoint, key: keyOverride }) {
   const q = typeof question === 'string' ? question.trim().slice(0, 500) : '';
   if (!q) return { error: 'Digite uma pergunta.' };
-  const key = readKey();
+  const key = keyOverride ?? readKey();
   if (!key) return { error: 'Falta a chave do Groq. Cole a chave em Ajustes, na seção Inteligência artificial.' };
 
   cancel();
@@ -195,9 +236,21 @@ async function ask({ question, history }, { settings, onSentence }) {
       ...sanitizeHistory(history),
       { role: 'user', content: q },
     ];
-    const text = await streamChat({ key, model: settings.aiModel, messages, signal: ctrl.signal, onSentence });
+    let model = settings.aiModel;
+    const run = () => streamChat({ key, model, messages, signal: ctrl.signal, onSentence, endpoint });
+    let text;
+    try {
+      text = await run();
+    } catch (e) {
+      // Modelo recusado (renomeado ou aposentado): troca por um que a conta tenha e tenta de novo.
+      if (!e.isModelError || ctrl.signal.aborted) throw e;
+      const alt = await pickModel({ key, bad: model, signal: ctrl.signal, endpoint });
+      if (!alt) throw e;
+      model = alt;
+      text = await run();
+    }
     if (!text) return { error: 'O Groq não devolveu resposta. Tente de novo.' };
-    return { text };
+    return { text, model };
   } catch (e) {
     if (ctrl.signal.aborted) {
       const timedOut = ctrl.signal.reason?.message === 'timeout';
@@ -215,4 +268,4 @@ function cancel() {
   active = null;
 }
 
-module.exports = { init, hasKey, setKey, ask, cancel, streamChat, Sentencer, cleanForSpeech };
+module.exports = { init, hasKey, setKey, ask, cancel, streamChat, listModels, pickModel, Sentencer, cleanForSpeech };
