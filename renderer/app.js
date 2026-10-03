@@ -2,13 +2,13 @@ import { Orb } from './orb.js';
 import { Voice } from './voice.js';
 import { Mic, micErrorMessage, explainNoSpeech, listMicrophones, cleanLabel } from './mic.js';
 import { parseCommand, classifyShort, classifyMedia } from './wake.js';
-import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
+import { buildBriefing, formatClock, formatDate, greeting, weatherLabel } from './format.js';
 
 const api = window.jarvis;
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Todo texto vindo de fora (notícias, cidades) entra por textContent, nunca por innerHTML.
+// Todo texto vindo de fora (cidades, compromissos) entra por textContent, nunca por innerHTML.
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -23,7 +23,6 @@ let chat = [];            // últimas perguntas e respostas, para a IA entender 
 let weather = null;
 let agenda = null;
 let spotifyOn = false;   // Spotify conectado: ativa os comandos de música sem IA
-let news = [];
 let speakId = 0;
 let statusNote = '';
 let followUntil = 0;   // até quando a conversa continua sem precisar dizer "Jarvis"
@@ -97,7 +96,6 @@ function tick() {
   const now = new Date();
   $('#clock').textContent = formatClock(now);
   $('#date').textContent = formatDate(now);
-  if (news.length) renderNews();
   setTimeout(tick, 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 50);
 }
 
@@ -143,47 +141,6 @@ async function loadWeather() {
 }
 
 // ---------------------------------------------------------------------------
-// Notícias
-// ---------------------------------------------------------------------------
-function renderNews() {
-  const ul = $('#news');
-  ul.replaceChildren(
-    ...news.map((n) => {
-      const btn = el('button', 'news-item');
-      btn.type = 'button';
-      btn.title = 'Abrir no navegador';
-      const meta = el('span', 'meta');
-      meta.append(el('span', null, n.source), el('span', null, relativeTime(n.time)));
-      btn.append(el('span', 'headline', n.title), meta);
-      btn.addEventListener('click', () => api.openLink(n.link));
-      const li = el('li');
-      li.append(btn);
-      return li;
-    }),
-  );
-}
-
-async function loadNews() {
-  try {
-    const r = await api.getNews(settings.feeds);
-    if (r.items.length) {
-      news = r.items;
-      renderNews();
-      return true;
-    }
-    throw new Error('nenhuma manchete recebida');
-  } catch (err) {
-    console.warn('[notícias]', err);
-    if (!news.length) {
-      $('#news').replaceChildren(
-        el('li', 'muted', 'Não consegui carregar as notícias. Verifique a conexão ou as fontes em Ajustes.'),
-      );
-    }
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Agenda e tarefas (Google)
 // ---------------------------------------------------------------------------
 const hhmm = (iso) => formatClock(new Date(iso));
@@ -191,23 +148,19 @@ const hhmm = (iso) => formatClock(new Date(iso));
 function renderAgenda() {
   const box = $('#agenda');
   if (!agenda?.connected) {
-    if (agenda?.needsReconnect) {
-      box.hidden = false;
-      box.replaceChildren(el('h2', null, 'Agenda'), el('p', 'muted', 'O acesso ao Google expirou. Reconecte em Ajustes.'));
-    } else {
-      box.hidden = true;
-      box.replaceChildren();
-    }
+    const text = agenda?.needsReconnect
+      ? 'O acesso ao Google expirou. Reconecte em Ajustes.'
+      : 'Conecte o Google em Ajustes para ver aqui a sua agenda e as suas tarefas.';
+    box.replaceChildren(el('h2', null, 'Agenda'), el('p', 'muted', text));
     return;
   }
-  box.hidden = false;
   const nodes = [el('h2', null, 'Hoje na agenda')];
   if (agenda.error) {
     nodes.push(el('p', 'muted', agenda.error));
   } else {
     const list = el('ul');
     const now = new Date();
-    for (const e of agenda.events.slice(0, 5)) {
+    for (const e of agenda.events.slice(0, 6)) {
       const li = el('li');
       if (!e.allDay && new Date(e.end || e.start) < now) li.className = 'done';
       li.append(el('time', null, e.allDay ? 'dia todo' : hhmm(e.start)), el('span', null, e.title));
@@ -218,7 +171,7 @@ function renderAgenda() {
     if (agenda.tasks.length) {
       nodes.push(el('h2', null, 'Tarefas'));
       const tasks = el('ul');
-      for (const t of agenda.tasks.slice(0, 4)) {
+      for (const t of agenda.tasks.slice(0, 5)) {
         const li = el('li');
         li.append(el('time', null, '·'), el('span', null, t.title));
         tasks.append(li);
@@ -529,7 +482,6 @@ async function runBriefing() {
       now: new Date(),
       weather,
       cityName: settings.city.name,
-      news,
       agenda,
     }));
   } finally {
@@ -575,16 +527,6 @@ async function loadVoices() {
   select.value = settings.voice;
 }
 
-const feedsToText = (feeds) => feeds.map((f) => `${f.name} | ${f.url}`).join('\n');
-function textToFeeds(text) {
-  return text.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
-    const i = line.indexOf('|');
-    const name = i >= 0 ? line.slice(0, i).trim() : '';
-    const url = (i >= 0 ? line.slice(i + 1) : line).trim();
-    return { name: name || (URL.canParse(url) ? new URL(url).hostname : url), url };
-  });
-}
-
 function fillSettings() {
   $('#set-rate').value = settings.rate;
   $('#out-rate').textContent = `${settings.rate > 0 ? '+' : ''}${settings.rate}%`;
@@ -593,7 +535,6 @@ function fillSettings() {
   $('#set-name').value = settings.userName;
   $('#set-name-spoken').value = settings.userNameSpoken;
   $('#city-current').textContent = `Cidade atual: ${settings.city.name}${settings.city.admin ? `, ${settings.city.admin}` : ''}.`;
-  $('#set-feeds').value = feedsToText(settings.feeds);
   $('#set-autostart').checked = settings.autostart;
   $('#set-speak').checked = settings.speakOnStart;
   $('#set-fullscreen').checked = settings.fullscreen;
@@ -723,12 +664,6 @@ function bindSettings() {
   $('#btn-city').addEventListener('click', search);
   $('#city-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
 
-  $('#set-feeds').addEventListener('change', async (e) => {
-    await save({ feeds: textToFeeds(e.target.value) });
-    e.target.value = feedsToText(settings.feeds);
-    news = [];
-    loop('news', loadNews, 20 * 60e3, 2 * 60e3);
-  });
 
   $('#set-autostart').addEventListener('change', (e) => save({ autostart: e.target.checked }));
   $('#set-speak').addEventListener('change', (e) => save({ speakOnStart: e.target.checked }));
@@ -881,10 +816,10 @@ window.addEventListener('keydown', (e) => {
 });
 
 tick();
+renderAgenda();
 refreshSpotifyStatus().catch(() => {});
 firstLoad = Promise.all([
   loop('weather', loadWeather, 15 * 60e3, 2 * 60e3),
-  loop('news', loadNews, 20 * 60e3, 2 * 60e3),
   loop('agenda', loadAgenda, 10 * 60e3, 2 * 60e3),
 ]);
 

@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('jarvis', {
   synthesize: (opts) => ipcRenderer.invoke('tts:synthesize', opts),
   getWeather: (lat, lon) => ipcRenderer.invoke('weather:get', lat, lon),
   searchCity: (query) => ipcRenderer.invoke('geo:search', query),
-  getNews: (feeds) => ipcRenderer.invoke('news:get', feeds),
   askAi: async (req, onSentence) => {
     const id = ++askCounter;
     const listener = (_e, m) => { if (m.id === id) onSentence(m.text); };

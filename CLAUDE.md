@@ -1,6 +1,6 @@
 # Jarvis
 
-Assistente pessoal de desktop para Windows, feito por Axl (dev full-stack, trabalha em português). Abre sozinho ao ligar o PC, mostra uma esfera dourada animada (referência: interface do Jarvis dos filmes), hora, clima, notícias, e fala um resumo do dia em voz natural.
+Assistente pessoal de desktop para Windows, feito por Axl (dev full-stack, trabalha em português). Abre sozinho ao ligar o PC, mostra uma esfera dourada animada (referência: interface do Jarvis dos filmes), hora, clima, agenda, e fala um resumo do dia em voz natural.
 
 **Regra de ouro do projeto: tudo gratuito, sem chave paga.** Qualquer nova dependência ou serviço precisa ter plano gratuito utilizável.
 
@@ -23,7 +23,6 @@ Acer Aspire A315-510P: Intel Core i3-N305, **8 GB de RAM** (7,68 utilizáveis), 
 | Esfera | Three.js r186, **embutido** em `renderer/vendor/` (sem CDN, funciona offline) |
 | Voz (saída) | `edge-tts-universal ^1.4.0`, no processo principal (Node). Cache MP3 em disco |
 | Clima | Open-Meteo (forecast + geocoding), sem chave |
-| Notícias | RSS buscado no processo principal, parser próprio sem dependência |
 | Fontes | Saira e Saira Condensed (SIL OFL), embutidas em `renderer/vendor/fonts/` |
 | Instalador | electron-builder (NSIS, instalação por usuário) |
 
@@ -36,7 +35,7 @@ main.js           janela, autostart (setLoginItemSettings), IPC, instância úni
 preload.js        contextBridge: expõe window.jarvis ao renderer
 src/settings.js   configurações persistidas (settings.json em userData) com validação
 src/tts.js        síntese edge-tts, cache em disco, timeout, lista de vozes pt-BR
-src/feeds.js      clima, busca de cidade, notícias RSS (decodifica ISO-8859-1)
+src/feeds.js      clima e busca de cidade (Open-Meteo)
 src/compat.js     modo de compatibilidade do microfone (desliga o sandbox de áudio do Chromium)
 src/ai.js         perguntas à IA (Groq, streaming), ciclo de ferramentas, busca na internet (Compound), chave cifrada, divisão em frases
 src/tools.js      ferramentas da IA (agenda, tarefas, busca, Spotify): definições, execução e resultados em texto
@@ -50,7 +49,7 @@ renderer/
   wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) no começo ou no fim da frase; frases curtas ("para", "obrigado"); comandos de música ("pausa", "próxima", "volume 40")
   index.html      estrutura + CSP + drawer de Ajustes
   styles.css      tokens, layout em grid, drawer
-  app.js          orquestração: estados, relógio, clima, notícias, resumo, Ajustes
+  app.js          orquestração: estados, relógio, clima, agenda, resumo, Ajustes
   orb.js          a esfera (Three.js + shaders GLSL)
   voice.js        reprodução de áudio, medição de volume, reserva em speechSynthesis
   format.js       textos em pt-BR, frases do resumo falado, mapa de códigos do clima
@@ -73,11 +72,11 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-to
 
 **Segurança do Electron.** `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`. O renderer só fala com o sistema pelo `window.jarvis` do preload. CSP restritiva no `index.html` (`default-src 'none'`, `connect-src 'none'`): **o renderer não faz requisições de rede**. Toda rede passa pelo processo principal (`src/feeds.js`, `src/tts.js`). `will-navigate` e `window.open` são bloqueados; `shell:open` só aceita `http(s)://`.
 
-**Texto externo nunca entra por `innerHTML`.** Manchetes e nomes de cidade vêm de fora; o renderer usa o helper `el()` com `textContent`. Manter.
+**Texto externo nunca entra por `innerHTML`.** Nomes de cidade e títulos de compromisso vêm de fora; o renderer usa o helper `el()` com `textContent`. Manter.
 
 **Settings validados no processo principal** (`sanitize` em `src/settings.js`): faixas limitadas, voz validada por regex, só URLs `http(s)` nos feeds, cidade com coordenadas válidas. Todo campo novo precisa entrar no `DEFAULTS` e no `sanitize`.
 
-**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `news:get`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`, `spotify:status`, `spotify:connect`, `spotify:disconnect`, `media:control`. Novo canal = handler em `main.js` + método no `preload.js`.
+**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`, `spotify:status`, `spotify:connect`, `spotify:disconnect`, `media:control`. Novo canal = handler em `main.js` + método no `preload.js`.
 
 **Por que a voz roda no processo principal.** Desde a v1.4.0 o edge-tts exige um header de WebSocket que navegadores não permitem. Só Node funciona. O main devolve um `Buffer` MP3 por IPC e o renderer toca num `<audio>`.
 
@@ -88,6 +87,8 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-to
 - Cache: SHA-1 de texto+voz+velocidade+tom, máximo de 300 arquivos (os mais antigos saem).
 
 **Frases com texto exibido diferente do falado.** Em `buildBriefing`, a primeira frase é `{ show, say }` para suportar `userNameSpoken` (pronúncia alternativa do nome). `speakSequence` aceita string ou `{show, say}`.
+
+**Sem notícias.** O Axl pediu para tirar a aba de notícias: não há mais feeds RSS, nem `news:get`, nem seção nos Ajustes, nem manchetes no resumo falado. `sanitize` apaga `feeds` de `settings.json` antigos. A coluna da direita agora é a agenda e as tarefas (`#agenda`), com uma dica para conectar o Google quando não está conectado. A busca na internet da IA continua existindo (outra coisa).
 
 **Sem legendas.** O Jarvis não mostra o que fala nem o que ouviu (pedido do Axl). `#notice` existe só para avisos e erros, discreto e some sozinho (`showNotice`). Os testes verificam o que ele fala pelas chamadas a `tts:synthesize`, não por texto na tela.
 
@@ -103,9 +104,11 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-to
 
 **Busca na internet.** Ferramenta `pesquisar_na_internet` chama o modelo `groq/compound-mini` (busca embutida, mesma chave; limite gratuito por busca: 30 req/min e 250/dia, mas a página oficial estava bloqueada no ambiente: confirmar se o plano gratuito permite a ferramenta de busca, que é cobrada em planos pagos). Se o modelo não existir, descobre outro `compound` da conta e grava em `webModel`; se não houver, devolve que a busca não está disponível. Opção `webSearch` nos Ajustes.
 
+**Núcleo da esfera (`orb.js`).** Como nos filmes, o centro tem um coração: ponto branco-quente com brilho, um anel fino ("olho") e clarão em cruz leve (`NUCLEUS_FRAG`), 90 raios que saem dele até a casca com pulsos de luz viajando (`SPOKE_*`, no grupo inclinado, giram ao contrário da casca), 3 anéis de giroscópio pequenos e inclinados (mesmo shader dos cometas, com `uBase` maior) e uma íris de HUD com círculos tracejados e régua que giram em sentidos opostos (`IRIS_FRAG`). Coração e íris são planos que sempre encaram a câmera, como o halo. Cada estado tem `core` em `STATES` (ouvindo cresce com a voz, pensando acelera tudo, falando pulsa com o áudio). O miolo esparso de partículas fica afastado do centro (r ≥ 0,3) para o núcleo aparecer limpo. **Para ver a esfera aqui:** `scripts/shot-orb.js` liga WebGL por software (SwiftShader) e salva `orb-<estado>.png` e um recorte ampliado `crop-<estado>.png`; leva alguns minutos por estado porque não há GPU. O harness principal NÃO renderiza WebGL (usa o anel de reserva).
+
 **Esfera (`orb.js`).** Três camadas aditivas sobre fundo sólido `#090604`: núcleo de partículas (rotação diferencial por latitude, o que dá o efeito de redemoinho sem tirar pontos da esfera), traços de circuito (`LineSegments` que andam na superfície com curvas de 90°) e 8 anéis de "cometas" (shader com cabeça e cauda). Uniformes compartilhados entre materiais. Estados em `STATES` (`idle`, `listening`, `thinking`, `speaking`) são interpolados suavemente; `setState(nome)` e `setLevel(0..1)` são a API pública. Os anéis são definidos por vetor normal com `|nz| >= 0.4`, **de propósito**: um anel visto de perfil vira um traço reto feio. Pixel ratio limitado a 1.5. Em janelas ≤ 980 px a esfera encolhe e sobe.
 
-**Estados da interface (`app.js`).** `hud.dataset.state` = `idle | listening | thinking | speaking`; `setState()` atualiza o atributo, a esfera e o texto de status. `speakId` é um contador para que uma fala antiga que termina não reponha o estado de uma fala nova. `loop(nome, fn, okMs, failMs)` agenda atualizações periódicas (clima 15 min, notícias 20 min, retry em 2 min).
+**Estados da interface (`app.js`).** `hud.dataset.state` = `idle | listening | thinking | speaking`; `setState()` atualiza o atributo, a esfera e o texto de status. `speakId` é um contador para que uma fala antiga que termina não reponha o estado de uma fala nova. `loop(nome, fn, okMs, failMs)` agenda atualizações periódicas (clima 15 min, agenda 10 min, retry em 2 min).
 
 **Autostart.** `app.setLoginItemSettings` com `--autostart`. Em desenvolvimento passa também o caminho do app. Ao abrir com `--autostart`, espera `startDelaySec` antes de criar a janela. Autoplay de áudio liberado (`autoplayPolicy: 'no-user-gesture-required'`), necessário para falar na abertura.
 
@@ -120,13 +123,12 @@ Regras de estilo a manter: rótulos em caixa normal (sem CAIXA ALTA), sem numera
 
 ## O que foi testado e o que NÃO foi
 
-Testado (Electron 44 em Linux com display virtual, harness com IPC simulado e `capturePage`): renderização WebGL, os 4 estados da esfera, layout em 1366×768, 1920×1080 e 900×700, Ajustes, mensagens de erro offline, fluxo do resumo com a voz online indisponível (timeout e reserva), validação e persistência de settings, parser de RSS.
+Testado (Electron 44 em Linux com display virtual, harness com IPC simulado e `capturePage`; WebGL só pelo `shot-orb.js`): renderização WebGL, os 4 estados da esfera, layout em 1366×768, 1920×1080 e 900×700, Ajustes, mensagens de erro offline, fluxo do resumo com a voz online indisponível (timeout e reserva), validação e persistência de settings, parser de RSS.
 
 **Nunca testado em Windows real, trate como suspeito:**
 1. Síntese real do edge-tts (o ambiente de teste bloqueava a rede). Confirmar que `listVoices()` e `EdgeTTS.synthesize()` funcionam e que as vozes pt-BR esperadas existem (`pt-BR-AntonioNeural`, `pt-BR-FranciscaNeural`, `pt-BR-ThalitaMultilingualNeural`).
 2. Autostart no login do Windows e o atraso de 20 s.
 3. `npm run dist` e o instalador NSIS.
-4. As URLs padrão dos feeds (G1, Folha, Tecnoblog) foram escritas de memória e nunca abertas.
 5. `speechSynthesis` com voz pt-BR do Windows como reserva.
 6. Desempenho real na GPU integrada (o teste usou renderização por software).
 7. Como a voz pronuncia "Axl" (campo `userNameSpoken` existe para corrigir).
@@ -139,7 +141,7 @@ Para testar a interface sem rede, o padrão que funcionou foi um script Electron
 
 ## Configurações (`settings.json`, em `%APPDATA%\jarvis`)
 
-`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `feeds [{name, url}]`, `aiModel`, `sttModel`, `webSearch`, `webModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`.
+`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `aiModel`, `sttModel`, `webSearch`, `webModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`.
 
 ## Roadmap
 

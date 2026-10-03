@@ -35,17 +35,6 @@ export const formatClock = (d) =>
 export const formatDate = (d) =>
   d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
 
-export function relativeTime(ms, now = Date.now()) {
-  if (!ms) return '';
-  const min = Math.max(0, Math.round((now - ms) / 60000));
-  if (min < 1) return 'agora';
-  if (min < 60) return `há ${min} min`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `há ${h} h`;
-  const days = Math.round(h / 24);
-  return days === 1 ? 'ontem' : `há ${days} dias`;
-}
-
 const graus = (n) => {
   const v = Math.round(n);
   const abs = Math.abs(v);
@@ -84,7 +73,7 @@ export function eventSentence(e) {
 const trimTitle = (t) => t.replace(/[.!?…\s]+$/, '').slice(0, 150);
 
 /** Monta as frases do resumo do dia. Cada frase vira um áudio (e uma legenda na tela). */
-export function buildBriefing({ name, nameSpoken, now, weather, cityName, news, agenda }) {
+export function buildBriefing({ name, nameSpoken, now, weather, cityName, agenda }) {
   const g = greeting(now);
   const out = [
     { show: `${g}, ${name}.`, say: `${g}, ${nameSpoken || name}.` },
@@ -123,11 +112,6 @@ export function buildBriefing({ name, nameSpoken, now, weather, cityName, news, 
     else if (tasks.length > 1) out.push(`Você tem ${tasks.length} tarefas pendentes, entre elas ${trimTitle(tasks[0].title)}.`);
   }
 
-  const top = (news || []).slice(0, 3);
-  if (top.length) {
-    out.push('Estas são as principais manchetes.');
-    for (const n of top) out.push(`${trimTitle(n.title)}.`);
-  }
   out.push('Isso é tudo por enquanto.');
   return out;
 }

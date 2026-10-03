@@ -21,11 +21,6 @@ const DEFAULTS = {
   listenOnStart: true,         // microfone sempre aberto ao iniciar (o Jarvis só age quando ouve "Jarvis")
   micCompat: false,            // desliga o sandbox de áudio do Chromium (para drivers que não abrem o microfone)
   micLabel: '',                // microfone escolhido (parte do nome); vazio = automático, evitando virtuais
-  feeds: [
-    { name: 'G1', url: 'https://g1.globo.com/rss/g1/' },
-    { name: 'Folha', url: 'https://feeds.folha.uol.com.br/emcimadahora/rss091.xml' },
-    { name: 'Tecnoblog', url: 'https://tecnoblog.net/feed/' },
-  ],
 };
 
 let file = null;
@@ -64,19 +59,7 @@ function sanitize(raw) {
     ? { name: str(c.name, 80, 'Local'), admin: typeof c.admin === 'string' ? c.admin.slice(0, 80) : '', lat, lon }
     : DEFAULTS.city;
 
-  out.feeds = (Array.isArray(out.feeds) ? out.feeds : [])
-    .map((f) => {
-      try {
-        const u = new URL(typeof f?.url === 'string' ? f.url.trim() : '');
-        if (!/^https?:$/.test(u.protocol)) return null;
-        return { name: str(f.name, 30, u.hostname), url: u.href.slice(0, 500) };
-      } catch {
-        return null; // URL inválida: descarta só este feed, não as configurações inteiras
-      }
-    })
-    .filter(Boolean)
-    .slice(0, 8);
-  if (!out.feeds.length) out.feeds = structuredClone(DEFAULTS.feeds);
+  delete out.feeds;   // as notícias saíram do Jarvis; configurações antigas com feeds são limpas aqui
   return out;
 }
 

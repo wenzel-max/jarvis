@@ -129,7 +129,6 @@ function registerIpc() {
   ipcMain.handle('tts:synthesize', (_e, opts) => tts.synthesize(opts));
   ipcMain.handle('weather:get', (_e, lat, lon) => feeds.getWeather(lat, lon));
   ipcMain.handle('geo:search', (_e, q) => feeds.searchCity(q));
-  ipcMain.handle('news:get', (_e, list) => feeds.getNews(list));
   ipcMain.handle('ai:ask', (e, req) => {
     const id = req && req.id;
     return ai.ask(req || {}, {

@@ -14,7 +14,6 @@ const settings = {
   city: { name: 'Natal', admin: 'Rio Grande do Norte', lat: -5.79, lon: -35.2 },
   autostart: false, startDelaySec: 0, speakOnStart: false, fullscreen: false, listenOnStart: false, bargeIn: true,
   aiModel: 'llama-3.1-8b-instant', sttModel: 'whisper-large-v3-turbo', micLabel: '', micCompat: false,
-  feeds: [{ name: 'G1', url: 'https://g1.globo.com/rss/g1/' }],
 };
 let aiMode = 'ok';
 let googleOn = false;
@@ -51,7 +50,6 @@ function fakeIpc() {
     current: { temperature_2m: 28, apparent_temperature: 29, relative_humidity_2m: 63, weather_code: 3, wind_speed_10m: 21 },
     daily: { temperature_2m_max: [29], temperature_2m_min: [25], precipitation_probability_max: [45] },
   }));
-  ipcMain.handle('news:get', () => ({ items: [{ title: 'Manchete de teste com acentuação: pró-ação', link: 'https://x.com', source: 'G1', time: Date.now() - 600000 }], failed: 0, total: 1 }));
   ipcMain.handle('geo:search', () => []);
   ipcMain.handle('shell:open', () => {});
   ipcMain.handle('win:fullscreen', () => false);
@@ -337,7 +335,8 @@ app.whenReady().then(async () => {
   await sleep(300);
 
   // ---- Google Agenda e Tarefas ----
-  check('sem Google conectado o painel da agenda não aparece', await js(win, "document.querySelector('#agenda').hidden"));
+  check('não há mais notícias: sem coluna, sem campo de feeds', await js(win, "!document.querySelector('#news') && !document.querySelector('#set-feeds') && !/Notícias/.test(document.body.innerText)"));
+  check('sem Google a coluna da direita ensina a conectar', /Conecte o Google em Ajustes/.test(await js(win, "document.querySelector('#agenda').textContent")));
   await click(win, '#btn-settings');
   await sleep(400);
   check('Ajustes mostra "Não conectado"', /Não conectado/.test(await js(win, "document.querySelector('#google-status').textContent")));
@@ -363,7 +362,6 @@ app.whenReady().then(async () => {
   check('o resumo falado inclui a agenda e as tarefas', dito.some((t) => /Você tem 2 compromissos hoje/.test(t)) && dito.some((t) => /Reunião com o time, às 23 e 30/.test(t)) && dito.some((t) => /2 tarefas pendentes/.test(t)), JSON.stringify(dito.filter((t) => /compromiss|tarefa|às/.test(t))));
   // o acesso vence (modo de teste do Google): aviso no painel, no resumo, e reconexão sem colar nada
   googleOn = false; googleExpired = true;
-  await js(win, 'document.querySelector("#agenda").hidden = true');
   await click(win, '#btn-settings');
   await sleep(400);
   check('acesso expirado: Ajustes explica e oferece "Conectar de novo"', /expirou/.test(await js(win, "document.querySelector('#google-status').textContent")) && (await js(win, "document.querySelector('#btn-g-connect').textContent")) === 'Conectar de novo');
@@ -384,7 +382,7 @@ app.whenReady().then(async () => {
   await sleep(300);
   await click(win, '#btn-g-disconnect');
   await sleep(500);
-  check('desconectar esconde o painel', !googleOn && await js(win, "document.querySelector('#agenda').hidden"));
+  check('desconectar volta a mostrar a dica de conexão', !googleOn && /Conecte o Google em Ajustes/.test(await js(win, "document.querySelector('#agenda').textContent")));
   await click(win, '#settings-close');
   await sleep(300);
 
