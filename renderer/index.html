@@ -24,7 +24,7 @@
     </section>
 
     <section class="center">
-      <p id="caption" class="caption" aria-live="polite"></p>
+      <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
     </section>
 
     <section class="side side-right" aria-label="Notícias">
@@ -66,6 +66,8 @@
         <label class="field"><span>Microfone</span>
           <select id="set-mic"></select>
         </label>
+        <label class="check"><input id="set-bargein" type="checkbox"><span>Poder interromper o Jarvis falando por cima</span></label>
+        <p class="hint">Use com fone. Com caixas de som, o eco da voz dele pode fazê-lo se interromper sozinho; nesse caso desligue esta opção.</p>
         <label class="check"><input id="set-listen" type="checkbox"><span>Ouvir o tempo todo (diga "Jarvis")</span></label>
         <p class="hint">O Jarvis só envia ao Groq os trechos em que ouve fala, e só responde quando você chama "Jarvis" ou logo depois de uma resposta. Pause com Ctrl+M.</p>
         <label class="check"><input id="set-mic-compat" type="checkbox"><span>Modo de compatibilidade do microfone</span></label>
@@ -153,7 +155,6 @@
     </div>
   </aside>
 
-  <audio id="voice-audio" preload="auto"></audio>
   <script type="module" src="app.js"></script>
 </body>
 </html>

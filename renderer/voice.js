@@ -1,9 +1,14 @@
 // Voz do Jarvis: edge-tts (via processo principal) com reserva na voz do sistema.
-// Também mede o volume do áudio que está tocando, para a esfera pulsar junto.
+// O áudio toca por Web Audio: cada frase é decodificada e agendada logo depois da anterior,
+// então não há o "buraco" de uma troca de arquivo entre frases, e parar é imediato.
+// Também mede o volume do que está tocando, para a esfera pulsar junto.
+
+const BREATH_S = 0.12;     // respiração entre frases (pessoas não emendam uma frase na outra)
+const LOOKAHEAD = 2;       // frases sintetizadas à frente da que está tocando
+const START_DELAY_S = 0.03;
 
 export class Voice {
-  constructor(audioEl) {
-    this.audio = audioEl;
+  constructor() {
     this.ctx = null;
     this.analyser = null;
     this.buf = null;
@@ -12,17 +17,17 @@ export class Voice {
     this.onFallback = null;     // chamado quando a voz online falha
     this._token = 0;
     this._fake = false;
+    this._sources = new Set();
+    this._tail = 0;             // instante (relógio do áudio) em que termina o que já está agendado
   }
 
   _graph() {
     if (this.ctx) return;
     this.ctx = new AudioContext();
-    const src = this.ctx.createMediaElementSource(this.audio);
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.6;
     this.buf = new Uint8Array(this.analyser.fftSize);
-    src.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
   }
 
@@ -45,37 +50,46 @@ export class Voice {
     this.speaking = on;
   }
 
+  /** Para tudo na hora: o que está tocando, o que está agendado e a voz do sistema. */
   stop() {
     this._token++;
-    this.audio.pause();
+    for (const src of this._sources) {
+      try { src.stop(); } catch { /* já tinha terminado */ }
+    }
+    this._sources.clear();
+    this._tail = 0;
     speechSynthesis?.cancel();
     this.speaking = false;
     this._fake = false;
   }
 
-  async _fetch(text, s, cacheOnly = false) {
-    const bytes = await window.jarvis.synthesize({ text, voice: s.voice, rate: s.rate, pitch: s.pitch, cacheOnly });
-    return URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+  /** Sintetiza (ou lê do cache) e decodifica uma frase. Devolve null se a voz online não respondeu. */
+  async _prepare(text, s, cacheOnly) {
+    try {
+      const bytes = await window.jarvis.synthesize({ text, voice: s.voice, rate: s.rate, pitch: s.pitch, cacheOnly });
+      this._graph();
+      const copy = bytes.buffer ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) : bytes;
+      return await this.ctx.decodeAudioData(copy);
+    } catch (e) {
+      console.warn('[voz]', e.message);
+      return null;
+    }
   }
 
-  _play(url, token) {
+  /** Agenda a frase logo depois do que já está tocando. Devolve quando ela termina. */
+  _schedule(audioBuffer) {
+    this._graph();
+    this.ctx.resume().catch(() => {});
+    const src = this.ctx.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(this.analyser);
+    const now = this.ctx.currentTime;
+    const when = this._tail > now ? this._tail + BREATH_S : now + START_DELAY_S;
+    src.start(when);
+    this._tail = when + audioBuffer.duration;
+    this._sources.add(src);
     return new Promise((resolve) => {
-      let watch = null;
-      const done = () => {
-        clearInterval(watch);
-        this.audio.removeEventListener('ended', done);
-        this.audio.removeEventListener('error', done);
-        URL.revokeObjectURL(url);
-        resolve();
-      };
-      this.audio.addEventListener('ended', done);
-      this.audio.addEventListener('error', done);
-      // stop() interrompe o áudio sem disparar `ended`; este vigia encerra a espera nesse caso
-      watch = setInterval(() => { if (token !== this._token) done(); }, 150);
-      this.audio.src = url;
-      this._graph();
-      this.ctx.resume().catch(() => {});
-      this.audio.play().catch(done);
+      src.onended = () => { this._sources.delete(src); resolve(); };
     });
   }
 
@@ -95,8 +109,8 @@ export class Voice {
 
   /**
    * Fala frases em sequência. `sentences` pode ser uma lista ou um iterável assíncrono
-   * (resposta da IA chegando aos poucos). Enquanto uma frase toca, a próxima já é preparada,
-   * então quase não há pausa entre elas.
+   * (resposta da IA chegando aos poucos). Duas frases ficam sintetizadas à frente e cada uma é
+   * agendada colada na anterior. Devolve true se terminou sem ser interrompida.
    */
   async speakSequence(sentences, { settings, onSentence } = {}) {
     this.stop();
@@ -111,26 +125,31 @@ export class Voice {
       if (r.done) return null;
       const say = typeof r.value === 'string' ? r.value : r.value.say;
       const show = typeof r.value === 'string' ? r.value : r.value.show;
-      const url = await this._fetch(say, settings, this.usingFallback).catch((e) => { console.warn('[voz]', e.message); return null; });
-      return { say, show, url };
+      return { say, show, audio: await this._prepare(say, settings, this.usingFallback) };
     };
 
-    let next = pull();
+    const ahead = [];
+    for (let i = 0; i < LOOKAHEAD; i++) ahead.push(pull());
+    const ends = [];
     for (let i = 0; ; i++) {
-      const cur = await next;
-      if (token !== this._token) { if (cur?.url) URL.revokeObjectURL(cur.url); return false; }
+      const cur = await ahead.shift();
+      if (token !== this._token) return false;
       if (!cur) break;
-      if (!cur.url && !this.usingFallback) { this.usingFallback = true; this.onFallback?.(); }
-      next = pull();
+      ahead.push(pull());
+      if (!cur.audio && !this.usingFallback) { this.usingFallback = true; this.onFallback?.(); }
       onSentence?.(cur.show, i);
-      if (cur.url) {
+      if (cur.audio) {
         this._fake = false;
-        await this._play(cur.url, token);
+        ends.push(this._schedule(cur.audio));
       } else {
+        // a voz do sistema não se agenda: espera o que já foi agendado terminar
+        await Promise.all(ends);
+        if (token !== this._token) return false;
         this._fake = true;
         await this._speakSystem(cur.say, settings, token);
       }
     }
+    await Promise.all(ends);
     if (token === this._token) { this.speaking = false; this._fake = false; }
     return token === this._token;
   }

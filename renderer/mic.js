@@ -5,7 +5,12 @@ const BLOCK = 2048;                // amostras por bloco de áudio (~43 ms a 48 
 const CALIBRATION_MS = 500;        // mede o ruído do ambiente antes de decidir o que é voz
 const PREROLL_MS = 400;            // guarda o que veio antes da voz, para não cortar a primeira sílaba
 const START_BLOCKS = 2;            // blocos seguidos acima do limiar para considerar que começou a fala
-const SILENCE_END_MS = 1100;       // silêncio que encerra a frase
+const BARGE_BLOCKS = 6;            // fala por cima do Jarvis: precisa durar ~250 ms, para eco e estalos não o interromperem
+const BARGE_MIN_THRESHOLD = 0.03;  // e ser bem mais forte que o ruído de fundo (sobra de eco das caixas de som)
+const SILENCE_SHORT_MS = 850;      // fim de frase depois de pouca fala ("Jarvis..." pode vir seguido de uma pausa)
+const SILENCE_LONG_MS = 600;       // fim de frase depois de uma fala mais longa: responde mais rápido
+const SHORT_SPEECH_MS = 900;
+const KEEP_TRAILING_MS = 250;      // do silêncio final, só isso vai para o Whisper (menos áudio, resposta mais rápida)
 const MIN_VOICED_MS = 350;         // menos voz que isso é estalo ou tosse, não fala
 const MAX_SEGMENT_MS = 20000;      // frase longa demais é cortada e enviada
 const WHISPER_RATE = 16000;        // taxa nativa do Whisper; também deixa o arquivo pequeno
@@ -123,6 +128,9 @@ export class Mic {
     this.preferred = '';   // parte do nome do microfone escolhido pelo usuário ('' = automático)
     this.running = false;
     this.paused = false;
+    this.duck = false;           // o Jarvis está pensando/falando: só uma fala forte e firme conta
+    this.bargeIn = true;         // se falso, o microfone fica mudo enquanto o Jarvis fala (caixas de som sem fone)
+    this.onBargeIn = null;       // () => void; você começou a falar por cima do Jarvis
     this.onSpeechStart = null;   // () => void
     this.onSpeechEnd = null;     // ({ buffer, mime, ms } | null) => void; null = foi só barulho
     this._graph = null;
@@ -245,6 +253,12 @@ export class Mic {
     }
   }
 
+  /** Liga/desliga o modo "Jarvis falando": o limiar sobe para não confundir a voz dele (eco) com a sua. */
+  setDuck(on) {
+    this.duck = on;
+    if (on) { this._loud = 0; }
+  }
+
   /** Zera o pico medido (usado pelo teste de microfone). */
   resetStats() {
     if (this.stats) { this.stats.peak = 0; this.stats.speechMs = 0; }
@@ -256,7 +270,7 @@ export class Mic {
     for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
     const rms = Math.sqrt(sum / data.length);
     const blockMs = (data.length / sampleRate) * 1000;
-    if (this.paused) { this.level = 0; return; }
+    if (this.paused || (this.duck && !this.bargeIn)) { this.level = 0; return; }
 
     this.level = Math.min(1, rms * 5);
     this.stats.peak = Math.max(this.stats.peak, rms);
@@ -268,7 +282,8 @@ export class Mic {
     }
     // O ruído de fundo continua sendo acompanhado enquanto ninguém fala.
     if (!this._seg && rms < this._floor * 3.5) this._floor = this._floor * 0.97 + rms * 0.03;
-    const threshold = Math.min(0.04, Math.max(0.008, this._floor * 3.5));
+    let threshold = Math.min(0.04, Math.max(0.008, this._floor * 3.5));
+    if (this.duck && !this._seg) threshold = Math.max(threshold * 2, BARGE_MIN_THRESHOLD);
     const voiced = rms > threshold;
     if (voiced) this.stats.speechMs += blockMs;
     const copy = Float32Array.from(data);
@@ -277,11 +292,12 @@ export class Mic {
       this._preroll.push(copy);
       while (this._preroll.length * blockMs > PREROLL_MS) this._preroll.shift();
       this._loud = voiced ? this._loud + 1 : 0;
-      if (this._loud >= START_BLOCKS) {
-        this._seg = { blocks: [...this._preroll], sampleRate, voicedMs: 0, silentMs: 0, ms: this._preroll.length * blockMs };
+      if (this._loud >= (this.duck ? BARGE_BLOCKS : START_BLOCKS)) {
+        const barge = this.duck;
+        this._seg = { blocks: [...this._preroll], sampleRate, voicedMs: 0, silentMs: 0, silentBlocks: 0, ms: this._preroll.length * blockMs, barge };
         this._preroll = [];
         this._loud = 0;
-        this.onSpeechStart?.();
+        if (barge) { this.duck = false; this.onBargeIn?.(); } else this.onSpeechStart?.();
       }
       return;
     }
@@ -289,11 +305,14 @@ export class Mic {
     const seg = this._seg;
     seg.blocks.push(copy);
     seg.ms += blockMs;
-    if (voiced) { seg.voicedMs += blockMs; seg.silentMs = 0; } else { seg.silentMs += blockMs; }
-    if (seg.silentMs >= SILENCE_END_MS || seg.ms >= MAX_SEGMENT_MS) {
+    if (voiced) { seg.voicedMs += blockMs; seg.silentMs = 0; seg.silentBlocks = 0; } else { seg.silentMs += blockMs; seg.silentBlocks++; }
+    const silenceNeeded = seg.voicedMs < SHORT_SPEECH_MS ? SILENCE_SHORT_MS : SILENCE_LONG_MS;
+    if (seg.silentMs >= silenceNeeded || seg.ms >= MAX_SEGMENT_MS) {
       this._seg = null;
       if (seg.voicedMs < MIN_VOICED_MS) { this.onSpeechEnd?.(null); return; }
-      this.onSpeechEnd?.({ buffer: encodeWav(seg.blocks, seg.sampleRate), mime: 'audio/wav', ms: seg.ms });
+      const extra = seg.silentBlocks - Math.ceil(KEEP_TRAILING_MS / blockMs);
+      if (extra > 0) seg.blocks.length -= extra;
+      this.onSpeechEnd?.({ buffer: encodeWav(seg.blocks, seg.sampleRate), mime: 'audio/wav', ms: seg.ms, barge: seg.barge });
     }
   }
 }

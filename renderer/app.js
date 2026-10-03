@@ -1,7 +1,7 @@
 import { Orb } from './orb.js';
 import { Voice } from './voice.js';
 import { Mic, micErrorMessage, explainNoSpeech, listMicrophones, cleanLabel } from './mic.js';
-import { parseCommand } from './wake.js';
+import { parseCommand, classifyShort } from './wake.js';
 import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -17,7 +17,7 @@ function el(tag, cls, text) {
 }
 
 const hud = $('#hud');
-const caption = $('#caption');
+const notice$ = $('#notice');   // só para avisos e erros; o Jarvis não mostra legenda do que fala
 let settings = await api.getSettings();
 let chat = [];            // últimas perguntas e respostas, para a IA entender "e amanhã?"
 let weather = null;
@@ -29,7 +29,7 @@ let followUntil = 0;   // até quando a conversa continua sem precisar dizer "Ja
 // ---------------------------------------------------------------------------
 // Esfera e voz
 // ---------------------------------------------------------------------------
-const voice = new Voice($('#voice-audio'));
+const voice = new Voice();
 const mic = new Mic();
 let orb = null;
 try {
@@ -60,19 +60,33 @@ function setState(state) {
   hud.dataset.state = state;
   orb?.setState(state);
   if (state === 'idle') statusNote = '';
-  // O Jarvis não deve ouvir a própria voz: o microfone fica mudo enquanto ele pensa ou fala,
-  // e volta um instante depois que ele termina (sobra de eco no ambiente).
+  // Enquanto o Jarvis pensa ou fala, o microfone só reage a uma fala forte e firme (você
+  // interrompendo); a voz dele em si não pode contar. Volta ao normal um instante depois
+  // que ele termina, por causa da sobra de eco no ambiente.
+  clearTimeout(resumeTimer);
   if (state === 'speaking' || state === 'thinking') {
-    clearTimeout(resumeTimer);
-    mic.setPaused(true);
+    mic.setDuck(true);
   } else if (state === 'idle') {
-    clearTimeout(resumeTimer);
-    resumeTimer = setTimeout(() => mic.setPaused(false), 700);
+    resumeTimer = setTimeout(() => mic.setDuck(false), 700);
+  } else {
+    mic.setDuck(false);
   }
   renderStatus();
 }
 
-const idleCaption = (now = new Date()) => `${greeting(now)}, ${settings.userName}.`;
+let noticeTimer = null;
+/** Mostra um aviso discreto por alguns segundos. */
+function showNotice(text) {
+  clearTimeout(noticeTimer);
+  notice$.textContent = text;
+  notice$.hidden = false;
+  noticeTimer = setTimeout(clearNotice, Math.min(15000, 4000 + text.length * 60));
+}
+function clearNotice() {
+  clearTimeout(noticeTimer);
+  notice$.hidden = true;
+  notice$.textContent = '';
+}
 
 // ---------------------------------------------------------------------------
 // Relógio
@@ -81,7 +95,6 @@ function tick() {
   const now = new Date();
   $('#clock').textContent = formatClock(now);
   $('#date').textContent = formatDate(now);
-  if (hud.dataset.state === 'idle') caption.textContent = idleCaption(now);
   if (news.length) renderNews();
   setTimeout(tick, 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 50);
 }
@@ -187,17 +200,15 @@ async function speak(sentences, { startState = 'speaking' } = {}) {
   try {
     await voice.speakSequence(sentences, {
       settings,
-      onSentence: (text) => {
+      onSentence: () => {
         if (id !== speakId) return;
         if (hud.dataset.state !== 'speaking') setState('speaking');
-        caption.textContent = text;
       },
     });
   } finally {
     if (id === speakId) {
       $('#btn-stop').hidden = true;
       setState('idle');
-      caption.textContent = idleCaption();
     }
   }
 }
@@ -215,7 +226,7 @@ function stopSpeaking() {
   voice.stop();
   $('#btn-stop').hidden = true;
   setState('idle');
-  caption.textContent = idleCaption();
+  clearNotice();
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +262,6 @@ async function ask(question) {
   abortAsk();
   const queue = sentenceQueue();
   currentQueue = queue;
-  caption.textContent = question;
 
   const speaking = speak(queue, { startState: 'thinking' });
   const sid = speakId;   // speak() acabou de gerar o id desta fala
@@ -275,7 +285,7 @@ async function ask(question) {
     $('#btn-stop').hidden = true;
   }
   await speaking;
-  if (reply.error && (early || sid === speakId)) caption.textContent = reply.error;
+  if (reply.error && (early || sid === speakId)) showNotice(reply.error);
   return early || sid === speakId;
 }
 
@@ -291,6 +301,7 @@ const NOTICE_EVERY_MS = 60000;
 
 const btnMic = $('#btn-mic');
 let transcribing = false;
+let pendingSeg = null;   // você continuou falando enquanto a frase anterior era transcrita
 let misses = 0;
 let sttTimes = [];
 let lastNotice = 0;
@@ -301,14 +312,14 @@ function renderMicButton() {
   renderStatus();
 }
 
-/** Mostra um aviso na legenda sem falar, no máximo uma vez por minuto (o microfone fica aberto o tempo todo). */
+/** Aviso discreto, no máximo um por minuto (o microfone fica aberto o tempo todo). */
 function notice(text, { force = false } = {}) {
   const now = Date.now();
   if (!force && now - lastNotice < NOTICE_EVERY_MS) return;
   lastNotice = now;
   if (hud.dataset.state === 'idle' || hud.dataset.state === 'listening') {
     setState('idle');
-    caption.textContent = text;
+    showNotice(text);
   }
 }
 
@@ -320,42 +331,74 @@ function openFollowUp() {
 
 const isMiss = (error) => /^Não entendi/.test(error);
 
-/** Uma frase captada pelo microfone: transcreve e decide se é com o Jarvis. */
-async function handleSegment(seg) {
+/** Transcreve um trecho, respeitando o limite por minuto. Nunca lança. */
+async function transcribeSegment(seg) {
   const now = Date.now();
   sttTimes = sttTimes.filter((t) => now - t < 60000);
-  if (transcribing || sttTimes.length >= MAX_TRANSCRIPTIONS_PER_MIN) {
-    if (hud.dataset.state === 'listening') setState('idle');
-    return;
-  }
-  transcribing = true;
+  if (sttTimes.length >= MAX_TRANSCRIPTIONS_PER_MIN) return { error: 'limite local' };
   sttTimes.push(now);
-  const inConversation = now < followUntil;
-  let reply;
   try {
-    reply = await api.transcribe(seg.buffer, seg.mime);
+    return await api.transcribe(seg.buffer, seg.mime);
   } catch (err) {
     console.warn('[voz de entrada]', err);
-    reply = { error: 'Algo deu errado ao entender a sua voz.' };
+    return { error: 'Algo deu errado ao entender a sua voz.' };
   }
+}
+
+/** Você começou a falar por cima do Jarvis: ele para na hora e passa a ouvir. */
+function interrupt() {
+  speakId++;
+  abortAsk();
+  voice.stop();
+  $('#btn-stop').hidden = true;
+  clearNotice();
+  openFollowUp();               // quem interrompe está falando com o Jarvis: não precisa dizer o nome
+  setState('listening');
+}
+
+/** Uma frase captada pelo microfone: transcreve e decide se é com o Jarvis. */
+async function handleSegment(seg) {
+  if (transcribing) { pendingSeg = seg; return; }
+  const inConversation = Date.now() < followUntil || seg.barge;
+  transcribing = true;
+  const reply = await transcribeSegment(seg);
   transcribing = false;
   if (hud.dataset.state === 'listening') setState('idle');
+  const next = () => { if (pendingSeg) { const p = pendingSeg; pendingSeg = null; handleSegment(p); } };
 
   if (reply.error) {
-    if (!isMiss(reply.error)) { notice(reply.error); return; }       // chave, conexão, limite...
-    if (!inConversation) return;                                      // barulho qualquer: ignora
+    if (reply.error === 'limite local') { next(); return; }
+    if (!isMiss(reply.error)) { pendingSeg = null; notice(reply.error); return; }   // chave, conexão, limite...
+    if (!inConversation || seg.barge || pendingSeg) { next(); return; }   // barulho, interrupção sem palavras, ou você já continuou: fica quieto
     misses++;
     if (misses > MAX_MISSES) { misses = 0; followUntil = 0; renderStatus(); return; }
-    await speak([{ show: 'Não entendi, pode repetir?', say: 'Não entendi, pode repetir?' }]);
+    await speak(['Não entendi, pode repetir?']);
     openFollowUp();
     return;
   }
 
-  const { woke, command } = parseCommand(reply.text);
-  if (!woke && !inConversation) return;         // conversa ao redor: não é com o Jarvis
+  const parsed = parseCommand(reply.text);
+  if (!parsed.woke && !inConversation) { next(); return; }           // conversa ao redor: não é com o Jarvis
   misses = 0;
+  let command = parsed.command;
+
+  // Você fez uma pausa no meio da frase e continuou: junta as duas partes antes de responder.
+  if (pendingSeg) {
+    const more = pendingSeg;
+    pendingSeg = null;
+    const r2 = await transcribeSegment(more);
+    if (r2.text) command = `${command} ${parseCommand(r2.text).command}`.trim();
+  }
+
   if (!command) {                                // só chamou o nome
     await speak(['Pois não?']);
+    openFollowUp();
+    return;
+  }
+  const short = classifyShort(command);
+  if (short === 'stop') { openFollowUp(); return; }                 // "para", "chega": fica quieto, ouvindo
+  if (short === 'thanks') {
+    await speak(['De nada!']);
     openFollowUp();
     return;
   }
@@ -365,6 +408,7 @@ async function handleSegment(seg) {
 mic.onSpeechStart = () => {
   if (hud.dataset.state === 'idle') setState('listening');
 };
+mic.onBargeIn = interrupt;
 mic.onSpeechEnd = (seg) => {
   if (!seg) { if (hud.dataset.state === 'listening') setState('idle'); return; }
   handleSegment(seg);
@@ -373,6 +417,7 @@ mic.onSpeechEnd = (seg) => {
 async function startMic() {
   if (mic.running) return true;
   mic.preferred = settings.micLabel;
+  mic.bargeIn = settings.bargeIn;
   try {
     await mic.start();
   } catch (err) {
@@ -381,7 +426,7 @@ async function startMic() {
     notice(micErrorMessage(err), { force: true });
     return false;
   }
-  mic.setPaused(hud.dataset.state === 'speaking' || hud.dataset.state === 'thinking');
+  mic.setDuck(hud.dataset.state === 'speaking' || hud.dataset.state === 'thinking');
   renderMicButton();
   return true;
 }
@@ -389,6 +434,7 @@ async function startMic() {
 function stopMic() {
   mic.stop();
   followUntil = 0;
+  pendingSeg = null;
   if (hud.dataset.state === 'listening') setState('idle');
   renderMicButton();
 }
@@ -486,6 +532,7 @@ function fillSettings() {
   $('#set-stt-model').value = settings.sttModel;
   $('#set-mic-compat').checked = settings.micCompat;
   $('#set-listen').checked = settings.listenOnStart;
+  $('#set-bargein').checked = settings.bargeIn;
   refreshAiStatus();
 }
 
@@ -540,7 +587,7 @@ function bindSettings() {
     speak([{ show: `Olá, ${settings.userName}. Esta é a minha voz.`, say: `Olá, ${spoken}. Esta é a minha voz.` }]);
   });
 
-  $('#set-name').addEventListener('change', (e) => { save({ userName: e.target.value }); caption.textContent = idleCaption(); });
+  $('#set-name').addEventListener('change', (e) => { save({ userName: e.target.value }); });
   $('#set-name-spoken').addEventListener('change', (e) => save({ userNameSpoken: e.target.value }));
 
   const search = async () => {
@@ -601,6 +648,7 @@ function bindSettings() {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
   });
+  $('#set-bargein').addEventListener('change', (e) => { save({ bargeIn: e.target.checked }); mic.bargeIn = e.target.checked; });
   $('#set-listen').addEventListener('change', (e) => {
     save({ listenOnStart: e.target.checked });
     if (e.target.checked) startMic(); else stopMic();

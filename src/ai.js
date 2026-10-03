@@ -11,6 +11,8 @@ const MAX_AUDIO_BYTES = 5 * 1024 * 1024;   // ~15 s de fala em webm/opus tem pou
 const AUDIO_TYPES = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/mpeg': 'mp3' };
 const TOTAL_TIMEOUT_MS = 40000;
 const MIN_SENTENCE = 25;   // frases muito curtas são juntadas à seguinte
+const MIN_FIRST = 14;      // a primeira frase sai mais cedo: é ela que decide quando o Jarvis começa a falar
+const MIN_FIRST_AT_COMMA = 30; // sem ponto final à vista, a primeira frase pode fechar numa vírgula
 const MAX_SENTENCE = 280;  // o edge-tts aceita 600; cortar antes evita frases gigantes
 
 let keyFile = null;
@@ -67,6 +69,7 @@ class Sentencer {
   constructor(emit) {
     this.buf = '';
     this.emit = emit;
+    this.sent = 0;   // quantas frases já saíram
   }
 
   push(text) {
@@ -83,11 +86,20 @@ class Sentencer {
   }
 
   _cut() {
+    const first = this.sent === 0;
+    const min = first ? MIN_FIRST : MIN_SENTENCE;
     const re = /[.!?…]+["')»\]]*(?=\s)|\n+/g;
     let m;
     while ((m = re.exec(this.buf))) {
       const end = m.index + m[0].length;
-      if (cleanForSpeech(this.buf.slice(0, end)).length >= MIN_SENTENCE) return end;
+      if (cleanForSpeech(this.buf.slice(0, end)).length >= min) return end;
+    }
+    if (first) {   // a primeira frase não espera o ponto final se já há um trecho falável até uma vírgula
+      const comma = /[,;:]\s/g;
+      while ((m = comma.exec(this.buf))) {
+        const end = m.index + 1;
+        if (cleanForSpeech(this.buf.slice(0, end)).length >= MIN_FIRST_AT_COMMA) return end;
+      }
     }
     if (this.buf.length > MAX_SENTENCE) {
       const at = Math.max(this.buf.lastIndexOf(', ', MAX_SENTENCE), this.buf.lastIndexOf(' ', MAX_SENTENCE));
@@ -99,7 +111,7 @@ class Sentencer {
   _take(end) {
     const text = cleanForSpeech(this.buf.slice(0, end));
     this.buf = this.buf.slice(end);
-    if (text) this.emit(text);
+    if (text) { this.sent++; this.emit(text); }
   }
 }
 
@@ -113,10 +125,12 @@ const HTTP_ERRORS = {
 function systemPrompt({ userName, city }) {
   const agora = new Date().toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
   return [
-    `Você é o Jarvis, o assistente pessoal de ${userName} no computador dele.`,
-    'Responda sempre em português do Brasil, em tom natural e direto, com no máximo três frases curtas, a menos que peçam mais detalhes.',
-    'Sua resposta será falada em voz alta: não use markdown, listas, tabelas, emojis nem links, e escreva números e unidades como se fala.',
-    'Se não souber ou não tiver como saber, diga isso com franqueza. Você não tem acesso à internet nem ao computador do usuário nesta conversa.',
+    `Você é o Jarvis, o assistente de voz de ${userName}. Vocês estão conversando em voz alta, como duas pessoas, e o que você escreve vai ser falado.`,
+    'Fale como um brasileiro fala no dia a dia: natural, caloroso e direto. Use "tá", "pra" e "né" quando soar espontâneo, sem exagerar.',
+    'Frases curtas e variadas, uma ideia por vez, em geral de uma a três frases. Vá direto ao ponto, sem repetir a pergunta e sem começar toda resposta com "claro" ou "com certeza".',
+    'Nada de markdown, listas, tabelas, emojis nem links. Escreva números, horas e unidades como se fala ("vinte e oito graus", "três e meia").',
+    'Se a pergunta for vaga, devolva uma pergunta curta. Se não souber, diga isso com naturalidade. Chame a pessoa pelo nome só de vez em quando.',
+    'Você não tem acesso à internet nem ao computador do usuário nesta conversa.',
     `Agora é ${agora}. O usuário mora em ${city}.`,
   ].join(' ');
 }

@@ -15,6 +15,7 @@ const DEFAULTS = {
   fullscreen: true,
   aiModel: 'llama-3.1-8b-instant',  // modelo do Groq usado nas perguntas
   sttModel: 'whisper-large-v3-turbo', // modelo do Groq que transcreve a fala
+  bargeIn: true,               // falar por cima interrompe o Jarvis (desligue se usar caixas de som e ele se ouvir)
   listenOnStart: true,         // microfone sempre aberto ao iniciar (o Jarvis só age quando ouve "Jarvis")
   micCompat: false,            // desliga o sandbox de áudio do Chromium (para drivers que não abrem o microfone)
   micLabel: '',                // microfone escolhido (parte do nome); vazio = automático, evitando virtuais
@@ -46,6 +47,7 @@ function sanitize(raw) {
   out.autostart = !!out.autostart;
   out.speakOnStart = !!out.speakOnStart;
   out.fullscreen = !!out.fullscreen;
+  out.bargeIn = !!out.bargeIn;
   out.listenOnStart = !!out.listenOnStart;
   out.micCompat = !!out.micCompat;
   out.micLabel = typeof out.micLabel === 'string' ? out.micLabel.trim().slice(0, 120) : '';

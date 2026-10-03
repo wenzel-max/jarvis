@@ -19,6 +19,21 @@ async function withServer(handler, fn) {
   for (const piece of ['Olá, Axl! Hoje o céu está ', 'nublado em Natal. Leve ', 'um guarda-chuva. 3.5 graus.', ' Ok']) s.push(piece);
   s.flush();
   assert.deepStrictEqual(out, ['Olá, Axl! Hoje o céu está nublado em Natal.', 'Leve um guarda-chuva. 3.5 graus.', 'Ok']);
+  // primeira frase sai cedo: curta já serve, e sem ponto final fecha numa vírgula
+  const early = [];
+  const se = new Sentencer((t) => early.push(t));
+  se.push('Tá bem nublado hoje. ');
+  se.push('Faz vinte e oito graus agora, então leve um ');
+  se.push('guarda-chuva se for sair.');
+  se.flush();
+  assert.deepStrictEqual(early, ['Tá bem nublado hoje.', 'Faz vinte e oito graus agora, então leve um guarda-chuva se for sair.']);
+  const comma = [];
+  const sc = new Sentencer((t) => comma.push(t));
+  sc.push('Olha, em Natal hoje o céu está bem nublado, com chance de ');
+  assert.deepStrictEqual(comma, ['Olha, em Natal hoje o céu está bem nublado,']);
+  sc.push('chuva à tarde. Leve um guarda-chuva por precaução.');
+  sc.flush();
+  assert.deepStrictEqual(comma.slice(1), ['com chance de chuva à tarde.', 'Leve um guarda-chuva por precaução.']);
   assert.strictEqual(cleanForSpeech('**Oi** [site](https://x.com) 😀\n- item um'), 'Oi site item um');
 
   // resposta em streaming, com pedaços cortados no meio da linha
