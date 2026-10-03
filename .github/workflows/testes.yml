@@ -1,0 +1,23 @@
+name: Testes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # --ignore-scripts: os testes não abrem o Electron, então não precisam baixar o binário dele
+      - run: npm ci --ignore-scripts
+      - run: node scripts/test-ai.js
+      - run: node scripts/test-google.js
+      - run: node scripts/test-spotify.js
+      - run: node scripts/test-tools.js
+      - run: node scripts/test-extras.js
+      - run: node scripts/test-wake.mjs

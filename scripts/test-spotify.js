@@ -23,6 +23,7 @@ let devices = [{ id: 'D1', name: 'Celular', type: 'Smartphone', is_active: false
 let player = { device: { volume_percent: 40 } };
 let nowItem = null;
 let fail = null;   // { status, body } para a próxima chamada de API
+let trackVolume = false;   // quando ligado, o player falso guarda o volume que recebe (testes do ducking)
 
 const readBody = (req) => new Promise((r) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => r(Buffer.concat(c).toString())); });
 const send = (res, status, obj) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(obj === undefined ? '' : JSON.stringify(obj)); };
@@ -52,6 +53,7 @@ async function fakeSpotify(req, res) {
   if (url.pathname === '/v1/me/player/devices') return send(res, 200, { devices });
   if (url.pathname === '/v1/me/player' && req.method === 'GET') return send(res, 200, player);
   if (url.pathname === '/v1/me/player/currently-playing') return nowItem ? send(res, 200, nowItem) : send(res, 204);
+  if (trackVolume && url.pathname === '/v1/me/player/volume' && player?.device) player.device.volume_percent = Number(rec.query.volume_percent);
   if (['/v1/me/player/play', '/v1/me/player/pause', '/v1/me/player/next', '/v1/me/player/previous', '/v1/me/player/volume'].includes(url.pathname)) return send(res, 204);
   send(res, 404, {});
 }
@@ -186,6 +188,65 @@ function browser(mode = 'ok') {
   const b2 = tokenReqs.length;
   await spotify.pause();
   assert.strictEqual(tokenReqs.length, b2 + 1);
+
+  // ---- abaixar a música enquanto o Jarvis fala ----
+  trackVolume = true;
+  const vols = () => calls.filter((c) => c.path === '/v1/me/player/volume').map((c) => c.query.volume_percent);
+  const mark = () => calls.length;
+  const volsSince = (n) => calls.slice(n).filter((c) => c.path === '/v1/me/player/volume').map((c) => c.query.volume_percent);
+  player = { is_playing: true, device: { id: 'D2', volume_percent: 60 } };
+  let n0 = mark();
+  assert.strictEqual(await spotify.duck(), true);
+  assert.deepStrictEqual(volsSince(n0), ['18'], '60 -> 30%');
+  assert.strictEqual(calls.at(-1).query.device_id, 'D2');
+  n0 = mark();
+  assert.strictEqual(await spotify.duck(), false, 'já está baixo: não abaixa de novo');
+  assert.deepStrictEqual(volsSince(n0), []);
+  assert.ok(secrets.has('spotify-duck'), 'guardado para sobreviver a uma queda');
+  assert.strictEqual(await spotify.unduck(), true);
+  assert.strictEqual(player.device.volume_percent, 60, 'voltou ao volume de antes');
+  assert.ok(!secrets.has('spotify-duck'));
+  assert.strictEqual(await spotify.unduck(), false, 'sem nada abaixado, não faz nada');
+
+  // você mexeu no volume enquanto ele falava: não desfaz
+  await spotify.duck();
+  player.device.volume_percent = 45;
+  n0 = mark();
+  assert.strictEqual(await spotify.unduck(), false);
+  assert.deepStrictEqual(volsSince(n0), []);
+  assert.strictEqual(player.device.volume_percent, 45);
+
+  // música parada ou volume já muito baixo: não mexe
+  player = { is_playing: false, device: { id: 'D2', volume_percent: 60 } };
+  n0 = mark();
+  assert.strictEqual(await spotify.duck(), false);
+  player = { is_playing: true, device: { id: 'D2', volume_percent: 10 } };
+  assert.strictEqual(await spotify.duck(), false);
+  assert.deepStrictEqual(volsSince(n0), []);
+  player = null;
+  assert.strictEqual(await spotify.duck(), false, 'sem player ativo');
+  player = { device: { volume_percent: 40 } };
+
+  // abaixar e restaurar "ao mesmo tempo" não se atropelam: as chamadas rodam em fila
+  player = { is_playing: true, device: { id: 'D2', volume_percent: 80 } };
+  const both = await Promise.all([spotify.duck(), spotify.unduck(), spotify.duck(), spotify.unduck()]);
+  assert.deepStrictEqual(both, [true, true, true, true]);
+  assert.strictEqual(player.device.volume_percent, 80);
+
+  // o app caiu no meio de uma fala: ao iniciar, restaura (só se foi há pouco)
+  player = { is_playing: true, device: { id: 'D2', volume_percent: 12 } };
+  secrets.set('spotify-duck', { from: 70, to: 12, device: 'D2', at: Date.now() - 60000 });
+  assert.strictEqual(await spotify.restoreAfterCrash(), true);
+  assert.strictEqual(player.device.volume_percent, 70);
+  secrets.set('spotify-duck', { from: 70, to: 12, device: 'D2', at: Date.now() - 3600000 });
+  player = { is_playing: true, device: { id: 'D2', volume_percent: 12 } };
+  assert.strictEqual(await spotify.restoreAfterCrash(), false);
+  assert.strictEqual(player.device.volume_percent, 12, 'foi há muito tempo: provavelmente você escolheu esse volume');
+  assert.ok(!secrets.has('spotify-duck'));
+  assert.strictEqual(await spotify.control('duck'), '');
+  await spotify.control('unduck');
+  trackVolume = false;
+  player = { device: { volume_percent: 40 } };
 
   // integração com as ferramentas da IA
   const tools = createTools({

@@ -73,9 +73,9 @@ const lastTool = (b) => b.messages.filter((m) => m.role === 'tool').at(-1)?.cont
   const names = () => tools.definitions().map((d) => d.function.name);
 
   // ---- ferramentas disponíveis dependem do que está conectado ----
-  assert.deepStrictEqual(names(), ['pesquisar_na_internet', 'agenda_listar', 'agenda_criar', 'agenda_alterar', 'agenda_apagar', 'tarefas_listar', 'tarefas_criar', 'tarefas_concluir']);
+  assert.deepStrictEqual(names(), ['pesquisar_na_internet', 'noticias', 'agenda_listar', 'agenda_criar', 'agenda_alterar', 'agenda_apagar', 'tarefas_listar', 'tarefas_criar', 'tarefas_concluir']);
   connected = false;
-  assert.deepStrictEqual(names(), ['pesquisar_na_internet']);
+  assert.deepStrictEqual(names(), ['pesquisar_na_internet', 'noticias']);
   webOn = false;
   assert.deepStrictEqual(names(), []);
   webOn = true; connected = true;
@@ -99,7 +99,7 @@ const lastTool = (b) => b.messages.filter((m) => m.role === 'tool').at(-1)?.cont
   const first = requests[0].body;
   assert.strictEqual(first.tool_choice, 'auto');
   assert.strictEqual(first.parallel_tool_calls, false);
-  assert.strictEqual(first.tools.length, 8);
+  assert.strictEqual(first.tools.length, 9);
   assert.match(first.messages[0].content, /Google Agenda/);
   assert.match(first.messages[0].content, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00 \(fuso /);
   assert.deepStrictEqual(gcalls.at(-1), ['listEvents', { timeMin: '2026-10-05T00:00:00', timeMax: '2026-10-05T23:59:59', max: 20 }]);

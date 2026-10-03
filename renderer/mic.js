@@ -213,13 +213,21 @@ export class Mic {
     const stream = await this._open();
     const ctx = new AudioContext();
     const src = ctx.createMediaStreamSource(stream);
-    // ScriptProcessor está marcado como obsoleto, mas funciona no Electron e evita um arquivo extra de worklet.
-    const proc = ctx.createScriptProcessor(BLOCK, 1, 1);
     const mute = ctx.createGain();
-    mute.gain.value = 0;                 // o processador precisa estar ligado à saída, sem tocar nada
+    mute.gain.value = 0;                 // o nó de captura precisa estar ligado à saída, sem tocar nada
+    // AudioWorklet roda fora da thread da interface (a esfera não atrapalha a captura). Se não carregar, cai no ScriptProcessor.
+    let proc;
+    try {
+      await ctx.audioWorklet.addModule('mic-worklet.js');
+      proc = new AudioWorkletNode(ctx, 'jarvis-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, processorOptions: { block: BLOCK } });
+      proc.port.onmessage = (e) => this._onBlock(e.data, ctx.sampleRate);
+    } catch (err) {
+      console.warn('[microfone] AudioWorklet indisponível, usando ScriptProcessor:', err?.message ?? err);
+      proc = ctx.createScriptProcessor(BLOCK, 1, 1);
+      proc.onaudioprocess = (e) => this._onBlock(e.inputBuffer.getChannelData(0), ctx.sampleRate);
+    }
     src.connect(proc);
     proc.connect(mute).connect(ctx.destination);
-    proc.onaudioprocess = (e) => this._onBlock(e.inputBuffer.getChannelData(0), ctx.sampleRate);
     this._graph = { stream, ctx, proc, src, mute };
     this.stats = { label: stream.getAudioTracks()[0]?.label ?? '', peak: 0, speechMs: 0 };
     this._floor = Infinity;
@@ -238,6 +246,7 @@ export class Mic {
     this.level = 0;
     if (!g) return;
     g.proc.onaudioprocess = null;
+    if (g.proc.port) g.proc.port.onmessage = null;
     g.stream.getTracks().forEach((t) => t.stop());
     g.ctx.close().catch(() => {});
   }

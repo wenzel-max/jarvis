@@ -63,7 +63,10 @@ async function synthesize({ text, voice, rate = 0, pitch = 0, cacheOnly = false 
 
   const key = crypto.createHash('sha1').update([text, voice, rate, pitch].join('|')).digest('hex');
   const file = path.join(cacheDir, `${key}.mp3`);
-  if (fs.existsSync(file)) return fs.readFileSync(file);
+  if (fs.existsSync(file)) {
+    try { const t = new Date(); fs.utimesSync(file, t, t); } catch { /* só ordem de limpeza */ }   // usada há pouco: não sai do cache
+    return fs.readFileSync(file);
+  }
   if (cacheOnly) throw new Error('Frase fora do cache e serviço de voz indisponível.');
 
   // A biblioteca não tem prazo próprio: sem internet ela ficaria esperando para sempre.
@@ -80,4 +83,22 @@ async function synthesize({ text, voice, rate = 0, pitch = 0, cacheOnly = false 
   return buf;
 }
 
-module.exports = { init, listPtBrVoices, synthesize };
+/**
+ * Deixa no cache as frases curtas que o Jarvis repete muito, para respondê-las na hora (e até offline).
+ * Roda em segundo plano, uma de cada vez; para na primeira falha (sem internet) e tenta de novo no próximo boot.
+ */
+async function prewarm(phrases, opts, { pauseMs = 400, shouldStop = () => false } = {}) {
+  let made = 0;
+  for (const text of phrases) {
+    if (shouldStop()) break;
+    try {
+      await synthesize({ text, ...opts, cacheOnly: true });   // já está no cache
+    } catch {
+      try { await synthesize({ text, ...opts }); made++; } catch { break; }
+      await new Promise((r) => setTimeout(r, pauseMs));
+    }
+  }
+  return made;
+}
+
+module.exports = { init, listPtBrVoices, synthesize, prewarm };

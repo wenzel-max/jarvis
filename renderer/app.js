@@ -2,6 +2,7 @@ import { Orb } from './orb.js';
 import { Voice } from './voice.js';
 import { Mic, micErrorMessage, explainNoSpeech, listMicrophones, cleanLabel } from './mic.js';
 import { parseCommand, classifyShort, classifyMedia } from './wake.js';
+import { playEarcon } from './earcon.js';
 import { buildBriefing, formatClock, formatDate, greeting, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -56,6 +57,20 @@ function renderStatus() {
 }
 
 let resumeTimer = null;
+let musicDucked = false;
+let unduckTimer = null;
+
+/** Música baixa enquanto o Jarvis fala; volta um instante depois (para frases seguidas não ficarem subindo e descendo). */
+function duckMusic(on) {
+  if (!spotifyOn || !settings.duckMusic) return;
+  clearTimeout(unduckTimer);
+  if (on && !musicDucked) {
+    musicDucked = true;
+    api.mediaControl('duck');
+  } else if (!on && musicDucked) {
+    unduckTimer = setTimeout(() => { musicDucked = false; api.mediaControl('unduck'); }, 1400);
+  }
+}
 
 function setState(state) {
   hud.dataset.state = state;
@@ -65,6 +80,7 @@ function setState(state) {
   // interrompendo); a voz dele em si não pode contar. Volta ao normal um instante depois
   // que ele termina, por causa da sobra de eco no ambiente.
   clearTimeout(resumeTimer);
+  duckMusic(state === 'speaking');
   if (state === 'speaking' || state === 'thinking') {
     mic.setDuck(state);
   } else if (state === 'idle') {
@@ -73,6 +89,7 @@ function setState(state) {
     mic.setDuck(false);
   }
   renderStatus();
+  if (state === 'idle') setTimeout(flushReminders, 1200);
 }
 
 let noticeTimer = null;
@@ -327,6 +344,22 @@ function spokenError(error) {
 // O microfone fica aberto; o Jarvis só age quando ouve "Jarvis" no começo da frase,
 // ou logo depois de uma resposta (FOLLOW_UP_MS), para a conversa continuar sem repetir o nome.
 // ---------------------------------------------------------------------------
+// Lembretes: o main avisa na hora marcada; se o Jarvis estiver ocupado, espera ficar livre.
+const dueReminders = [];
+function reminderLine(r) {
+  const who = settings.userNameSpoken || settings.userName;
+  if (r.kind === 'timer') return r.text.toLowerCase() === 'timer' ? `${who}, seu timer acabou.` : `${who}, o timer acabou: ${r.text}.`;
+  return `${who}, lembrete${r.late ? ' atrasado' : ''}: ${r.text}.`;
+}
+function flushReminders() {
+  if (!dueReminders.length || hud.dataset.state !== 'idle') return;
+  const lines = dueReminders.splice(0).map(reminderLine);
+  playEarcon('ok');
+  api.log('app', `falando lembrete: ${lines.join(' ')}`);
+  speak(lines).catch(() => {});
+}
+api.onReminder((r) => { dueReminders.push(r); flushReminders(); });
+
 const FOLLOW_UP_MS = 30000;
 const MAX_TRANSCRIPTIONS_PER_MIN = 10;   // o plano gratuito do Whisper permite 20
 const MAX_MISSES = 2;                    // "não entendi" seguidos antes de voltar a esperar o nome
@@ -356,9 +389,13 @@ function notice(text, { force = false } = {}) {
   }
 }
 
+let endTimer = null;
 function openFollowUp() {
   followUntil = Date.now() + FOLLOW_UP_MS;
   setTimeout(renderStatus, FOLLOW_UP_MS + 100);
+  // Fim da conversa: se a janela só apareceu porque o Jarvis foi chamado, ela some de novo.
+  clearTimeout(endTimer);
+  endTimer = setTimeout(() => { if (hud.dataset.state === 'idle' && Date.now() >= followUntil) api.conversationEnded(); }, FOLLOW_UP_MS + 1500);
   renderStatus();
 }
 
@@ -416,6 +453,7 @@ async function handleSegment(seg) {
   if (hud.dataset.state === 'listening') setState('idle');
   const next = () => { if (pendingSeg) { const p = pendingSeg; pendingSeg = null; handleSegment(p); } };
 
+  if (reply.usageWarning) notice(reply.usageWarning);
   if (reply.error) {
     if (reply.error === 'limite local') { api.log('ouvi', 'frase ignorada: limite local de transcrições por minuto'); next(); return; }
     if (!isMiss(reply.error)) {                                      // chave, conexão, limite...
@@ -460,6 +498,8 @@ async function handleSegment(seg) {
   // "Jarvis, qual o próximo jogo..." [pensando] "...do Flamengo?": a continuação completa a pergunta. "Para" e comandos de música não.
   if (carry && !short && !media) command = `${carry} ${command}`.trim();
   api.log('ouvi', `comando: "${command}"${carry ? ' (continuação)' : ''}`);
+  if (command && settings.earcons) playEarcon('ok');      // mostra na hora que ele entendeu
+  if (command) api.wakeWindow();                          // escondido na bandeja: a janela volta para a conversa
 
   if (!command) {                                // só chamou o nome
     await speak(['Pois não?']);
@@ -510,6 +550,7 @@ async function startMic() {
   }
   mic.setDuck(['speaking', 'thinking'].includes(hud.dataset.state) ? hud.dataset.state : false);
   renderMicButton();
+  if (settings.earcons) playEarcon('on');
   return true;
 }
 
@@ -519,10 +560,12 @@ function stopMic() {
   pendingSeg = null;
   if (hud.dataset.state === 'listening') setState('idle');
   renderMicButton();
+  if (settings.earcons) playEarcon('off');
 }
 
 const toggleMic = () => (mic.running ? stopMic() : startMic());
 btnMic.addEventListener('click', toggleMic);
+api.onToggleListen(toggleMic);
 
 let firstLoad = Promise.resolve();
 
@@ -605,12 +648,35 @@ function fillSettings() {
   $('#set-mic-compat').checked = settings.micCompat;
   $('#set-listen').checked = settings.listenOnStart;
   $('#set-bargein').checked = settings.bargeIn;
+  $('#set-earcons').checked = settings.earcons;
+  $('#set-duck').checked = settings.duckMusic;
+  $('#set-background').checked = settings.backgroundMode;
+  $('#set-autoupdate').checked = settings.autoUpdate;
   $('#set-websearch').checked = settings.webSearch;
+  $('#set-apps').value = (settings.apps ?? []).map((a) => `${a.name} | ${a.target}`).join('\n');
   refreshAiStatus();
+  refreshMemory();
+}
+
+async function refreshMemory() {
+  const items = await api.memoryList();
+  const ul = $('#memory-list');
+  if (!items.length) { ul.replaceChildren(el('li', '', 'Nada guardado ainda.')); return; }
+  ul.replaceChildren(...items.map((f) => {
+    const b = el('button', '', 'esquecer');
+    b.type = 'button';
+    b.addEventListener('click', async () => { await api.memoryRemove(f.id); refreshMemory(); });
+    const li = el('li');
+    li.append(el('span', '', f.text), b);
+    return li;
+  }));
 }
 
 async function refreshAiStatus() {
-  const { hasKey } = await api.aiKeyStatus();
+  const { hasKey, hasFallbackKey } = await api.aiKeyStatus();
+  $('#ai-fb-status').textContent = hasFallbackKey
+    ? 'Reserva ativa: se o Groq atingir o limite ou cair, o Gemini responde no lugar. Cole outra chave para trocar, ou deixe vazio e salve para apagar.'
+    : 'Sem reserva. Com uma chave gratuita do Gemini, o Jarvis continua respondendo quando o Groq atingir o limite ou ficar fora do ar.';
   $('#ai-status').textContent = hasKey
     ? 'Chave salva com segurança neste computador. Cole outra para trocar, ou deixe vazio e salve para apagar.'
     : 'Sem chave ainda. Crie uma chave gratuita no Groq e cole aqui para poder fazer perguntas.';
@@ -657,7 +723,8 @@ async function refreshSpotifyStatus() {
 
 async function refreshDiag() {
   const box = $('#diag-log');
-  box.value = (await api.logTail()) || 'Nada registrado ainda.';
+  const usage = await api.usageSummary();
+  box.value = `${usage}\n${(await api.logTail()) || 'Nada registrado ainda.'}`;
   box.scrollTop = box.scrollHeight;
 }
 
@@ -746,6 +813,18 @@ function bindSettings() {
     if (r.ok) input.value = '';
     refreshAiStatus();
   });
+  $('#btn-ai-fbget').addEventListener('click', () => api.openLink('https://aistudio.google.com/apikey'));
+  $('#btn-ai-fbkey').addEventListener('click', async () => {
+    const msg = $('#ai-msg');
+    const input = $('#set-ai-fbkey');
+    const r = await api.setAiKey(input.value, 'gemini');
+    msg.hidden = false;
+    msg.textContent = r.ok ? (r.hasFallbackKey ? 'Chave de reserva salva.' : 'Chave de reserva apagada.') : r.error;
+    if (r.ok) input.value = '';
+    refreshAiStatus();
+  });
+  $('#set-background').addEventListener('change', (e) => save({ backgroundMode: e.target.checked }));
+  $('#set-autoupdate').addEventListener('change', (e) => save({ autoUpdate: e.target.checked }));
   $('#set-ai-model').addEventListener('change', async (e) => {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
@@ -806,9 +885,20 @@ function bindSettings() {
     document.execCommand('copy');
     box.setSelectionRange(0, 0);
   });
+  $('#btn-memory-clear').addEventListener('click', async () => { await api.memoryClear(); refreshMemory(); });
+  $('#btn-apps-save').addEventListener('click', async () => {
+    const lines = $('#set-apps').value.split('\n').map((l) => l.trim()).filter(Boolean);
+    const apps = lines.map((l) => { const i = l.indexOf('|'); return i < 0 ? { name: l, target: '' } : { name: l.slice(0, i).trim(), target: l.slice(i + 1).trim() }; });
+    await save({ apps });
+    const kept = settings.apps?.length ?? 0;
+    $('#set-apps').value = (settings.apps ?? []).map((a) => `${a.name} | ${a.target}`).join('\n');
+    $('#apps-status').textContent = kept === apps.length ? 'Salvo.' : `Salvo, mas ${apps.length - kept} linha(s) foram ignoradas: use "nome | C:\\caminho\\programa.exe" ou um endereço http(s).`;
+  });
   $('#btn-diag-clear').addEventListener('click', async () => { await api.logClear(); refreshDiag(); });
   $('#btn-diag-folder').addEventListener('click', () => api.logFolder());
   $('#set-websearch').addEventListener('change', (e) => save({ webSearch: e.target.checked }));
+  $('#set-duck').addEventListener('change', (e) => save({ duckMusic: e.target.checked }));
+  $('#set-earcons').addEventListener('change', (e) => { save({ earcons: e.target.checked }); if (e.target.checked) playEarcon('ok'); });
   $('#set-bargein').addEventListener('change', (e) => { save({ bargeIn: e.target.checked }); mic.bargeIn = e.target.checked; });
   $('#set-listen').addEventListener('change', (e) => {
     save({ listenOnStart: e.target.checked });

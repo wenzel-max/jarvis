@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 const STT_ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;   // ~15 s de fala em webm/opus tem poucas dezenas de KB
@@ -17,35 +18,38 @@ const MIN_FIRST_AT_COMMA = 30; // sem ponto final à vista, a primeira frase pod
 const MAX_SENTENCE = 280;  // o edge-tts aceita 600; cortar antes evita frases gigantes
 
 let keyFile = null;
+let fallbackKeyFile = null;
 let active = null;         // AbortController da pergunta em andamento
 
 function init(dir) {
   keyFile = path.join(dir, 'ai-key.bin');
+  fallbackKeyFile = path.join(dir, 'ai-key-gemini.bin');
 }
 
 // ---------- chave ----------
-const hasKey = () => !!keyFile && fs.existsSync(keyFile);
+const fileFor = (provider) => (provider === 'gemini' ? fallbackKeyFile : keyFile);
+const hasKey = (provider = 'groq') => !!fileFor(provider) && fs.existsSync(fileFor(provider));
 
-function setKey(raw) {
+function setKey(raw, provider = 'groq') {
   const { safeStorage } = require('electron');
   const key = typeof raw === 'string' ? raw.trim() : '';
   if (!key) {
-    fs.rmSync(keyFile, { force: true });
+    fs.rmSync(fileFor(provider), { force: true });
     return;
   }
   if (!/^[A-Za-z0-9_-]{20,200}$/.test(key)) {
-    throw new Error('A chave tem formato inválido. Copie a chave inteira, que começa com gsk_.');
+    throw new Error(`A chave tem formato inválido. Copie a chave inteira${provider === 'gemini' ? ', que começa com AIza' : ', que começa com gsk_'}.`);
   }
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('O Windows não liberou o cofre de senhas, então a chave não pode ser guardada com segurança.');
   }
-  fs.writeFileSync(keyFile, safeStorage.encryptString(key));
+  fs.writeFileSync(fileFor(provider), safeStorage.encryptString(key));
 }
 
-function readKey() {
+function readKey(provider = 'groq') {
   try {
     const { safeStorage } = require('electron');
-    return safeStorage.decryptString(fs.readFileSync(keyFile));
+    return safeStorage.decryptString(fs.readFileSync(fileFor(provider)));
   } catch {
     return null;
   }
@@ -117,16 +121,16 @@ class Sentencer {
 }
 
 // ---------- chamada ao Groq ----------
-const HTTP_ERRORS = {
-  401: 'A chave do Groq foi recusada. Confira a chave em Ajustes.',
-  403: 'O Groq negou o acesso com essa chave. Confira a conta e a chave em Ajustes.',
-  429: 'Atingi o limite gratuito do Groq. Tente de novo em alguns minutos.',
-};
+const httpErrors = (name) => ({
+  401: `A chave do ${name} foi recusada. Confira a chave em Ajustes.`,
+  403: `O ${name} negou o acesso com essa chave. Confira a conta e a chave em Ajustes.`,
+  429: `Atingi o limite gratuito do ${name}. Tente de novo em alguns minutos.`,
+});
 
 const pad = (n) => String(n).padStart(2, '0');
 const localIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 
-function systemPrompt({ userName, city, capabilities = [] }) {
+function systemPrompt({ userName, city, capabilities = [], memory = '' }) {
   const now = new Date();
   const agora = now.toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -142,12 +146,18 @@ function systemPrompt({ userName, city, capabilities = [] }) {
       : '',
     online ? '' : 'Você não tem acesso à internet nem ao computador do usuário nesta conversa.',
     `Agora é ${agora}. O usuário mora em ${city}.`,
+    memory,
   ].filter(Boolean).join(' ');
 }
 
 /** Traduz uma resposta de erro do Groq em mensagem em português; marca erros de modelo. */
-async function throwHttpError(res, model) {
-  if (HTTP_ERRORS[res.status]) throw new Error(HTTP_ERRORS[res.status]);
+async function throwHttpError(res, model, name = 'Groq') {
+  if (res.status === 429 || res.status >= 500) {   // o provedor está limitado ou fora do ar: vale tentar o reserva
+    const err = new Error(res.status === 429 ? httpErrors(name)[429] : `O ${name} respondeu com erro ${res.status}. Tente de novo em instantes.`);
+    err.canFallback = true;
+    throw err;
+  }
+  if (httpErrors(name)[res.status]) throw new Error(httpErrors(name)[res.status]);
   const { message, code } = await errorDetail(res);
   if (code === 'tool_use_failed') {   // o modelo montou uma chamada de ferramenta inválida: tenta responder sem ferramentas
     const err = new Error('O modelo se confundiu ao usar uma ferramenta.');
@@ -159,8 +169,8 @@ async function throwHttpError(res, model) {
     err.isModelError = true;
     throw err;
   }
-  if (res.status === 400) throw new Error(`O Groq recusou o pedido${message ? `: ${message}` : '.'}`);
-  throw new Error(`O Groq respondeu com erro ${res.status}. Tente de novo em instantes.`);
+  if (res.status === 400) throw new Error(`O ${name} recusou o pedido${message ? `: ${message}` : '.'}`);
+  throw new Error(`O ${name} respondeu com erro ${res.status}. Tente de novo em instantes.`);
 }
 
 async function errorDetail(res) {
@@ -211,7 +221,7 @@ async function pickModel({ key, bad, signal, endpoint, kind = 'chat' }) {
  * Faz a pergunta e entrega a resposta em frases (onSentence) conforme chegam.
  * Devolve o texto completo. `endpoint` existe só para testes.
  */
-async function streamTurn({ key, model, messages, tools, toolChoice = 'auto', signal, onSentence, endpoint = ENDPOINT }) {
+async function streamTurn({ key, model, messages, tools, toolChoice = 'auto', signal, onSentence, endpoint = ENDPOINT, name = 'Groq' }) {
   const withTools = tools?.length > 0;
   let res;
   try {
@@ -221,14 +231,16 @@ async function streamTurn({ key, model, messages, tools, toolChoice = 'auto', si
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model, messages, stream: true, temperature: withTools ? 0.4 : 0.6, max_tokens: 400,
-        ...(withTools ? { tools, tool_choice: toolChoice, parallel_tool_calls: false } : {}),
+        ...(withTools ? { tools, tool_choice: toolChoice, ...(name === 'Groq' ? { parallel_tool_calls: false } : {}) } : {}),
       }),
     });
   } catch (e) {
     if (signal.aborted) throw e;
-    throw new Error('Sem conexão com o Groq. Verifique a internet.');
+    const err = new Error(`Sem conexão com o ${name}. Verifique a internet.`);
+    err.canFallback = true;
+    throw err;
   }
-  if (!res.ok) await throwHttpError(res, model);
+  if (!res.ok) await throwHttpError(res, model, name);
 
   const sentencer = new Sentencer(onSentence);
   const decoder = new TextDecoder();
@@ -250,11 +262,13 @@ async function streamTurn({ key, model, messages, tools, toolChoice = 'auto', si
         sentencer.push(delta.content);
       }
       for (const tc of delta?.tool_calls ?? []) {
-        const cur = calls.get(tc.index ?? 0) ?? { id: '', name: '', arguments: '' };
+        // o Gemini manda várias chamadas sem índice: uma chamada nova é a que traz um id novo
+        const idx = tc.index ?? (tc.id && calls.size && [...calls.values()].at(-1).id !== tc.id ? calls.size : Math.max(0, calls.size - 1));
+        const cur = calls.get(idx) ?? { id: '', name: '', arguments: '' };
         if (tc.id) cur.id = tc.id;
         if (tc.function?.name) cur.name += tc.function.name;
         if (tc.function?.arguments) cur.arguments += tc.function.arguments;
-        calls.set(tc.index ?? 0, cur);
+        calls.set(idx, cur);
       }
     }
   }
@@ -292,7 +306,7 @@ function parseArgs(text) {
   }
 }
 
-async function ask({ question, history }, { settings, onSentence, endpoint, key: keyOverride, tools, fillerMs = 7000, turnTimeoutMs = TURN_TIMEOUT_MS }) {
+async function ask({ question, history }, { settings, onSentence, endpoint, key: keyOverride, tools, fillerMs = 7000, turnTimeoutMs = TURN_TIMEOUT_MS, fallback: fallbackOverride, onFallback }) {
   const q = typeof question === 'string' ? question.trim().slice(0, 500) : '';
   if (!q) return { error: 'Digite uma pergunta.' };
   const key = keyOverride ?? readKey();
@@ -305,24 +319,35 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
   try {
     const defs = tools?.definitions() ?? [];
     const messages = [
-      { role: 'system', content: systemPrompt({ userName: settings.userName, city: settings.city.name, capabilities: tools?.capabilities() ?? [] }) },
+      { role: 'system', content: systemPrompt({ userName: settings.userName, city: settings.city.name, capabilities: tools?.capabilities() ?? [], memory: tools?.memoryBlock?.(settings.userName) ?? '' }) },
       ...sanitizeHistory(history),
       { role: 'user', content: q },
     ];
     let model = settings.aiModel;
+    let provider = { key, endpoint, name: 'Groq' };
+    // Reserva (Gemini): só entra se a chave existe e o Groq estiver limitado, fora do ar ou sem conexão.
+    const fb = fallbackOverride ?? (() => { const k = readKey('gemini'); return k ? { key: k, endpoint: GEMINI_ENDPOINT, name: 'Gemini', model: settings.fallbackModel } : null; })();
     // 'auto': o modelo escolhe; 'none': as ferramentas continuam na lista (a API exige isso quando há chamadas
     // no histórico) mas ele não pode chamar mais nenhuma; 'off': nunca houve ferramentas.
     let mode = defs.length > 0 ? 'auto' : 'off';
     const turn = async () => {
       const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(turnTimeoutMs)]);
-      const run = () => streamTurn({ key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : 'auto', signal, onSentence, endpoint });
+      let emitted = false;
+      const say = (t) => { emitted = true; onSentence(t); };
+      const run = () => streamTurn({ key: provider.key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : 'auto', signal, onSentence: say, endpoint: provider.endpoint, name: provider.name });
       try {
         return await run();
       } catch (e) {
+        if (e.canFallback && fb && provider.name === 'Groq' && !emitted && !ctrl.signal.aborted) {
+          provider = fb;
+          model = fb.model || 'gemini-2.5-flash';
+          onFallback?.(e.message);
+          return run();
+        }
         if (e.isToolError && mode === 'auto') { mode = 'none'; return run(); }   // sem poder chamar ferramentas, pelo menos responde
         // Modelo recusado (renomeado ou aposentado): troca por um que a conta tenha e tenta de novo.
         if (!e.isModelError || ctrl.signal.aborted) throw e;
-        const alt = await pickModel({ key, bad: model, signal: ctrl.signal, endpoint });
+        const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint });
         if (!alt) throw e;
         model = alt;
         return run();
@@ -358,7 +383,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       }
     }
     if (!spoken) return { error: 'O Groq não devolveu resposta. Tente de novo.' };
-    return { text: spoken, model };
+    return { text: spoken, model, provider: provider.name };
   } catch (e) {
     if (ctrl.signal.aborted) {
       const timedOut = ctrl.signal.reason?.message === 'timeout';

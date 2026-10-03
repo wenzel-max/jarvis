@@ -1,0 +1,24 @@
+name: Instalador
+
+# Para lançar uma versão: aumente "version" no package.json, faça commit e crie a tag, por exemplo
+#   git tag v0.2.0 && git push origin v0.2.0
+# O instalador (.exe) aparece em Releases. Com o repositório público, o Jarvis instalado se atualiza sozinho.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

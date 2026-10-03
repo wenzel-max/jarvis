@@ -173,5 +173,53 @@ async function withServer(handler, fn) {
     });
   }
 
+  // ---- reserva (Gemini) quando o Groq está limitado, fora do ar ou sem conexão ----
+  {
+    const settings = { userName: 'Axl', city: { name: 'Natal' }, aiModel: 'llama-x', fallbackModel: 'gemini-x' };
+    const seen = [];
+    const gemini = (req, res) => {
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        seen.push({ auth: req.headers.authorization, model: JSON.parse(b).model, parallel: 'parallel_tool_calls' in JSON.parse(b) });
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sse('Aqui é o reserva, Axl.') + 'data: [DONE]\n\n');
+      });
+    };
+    await withServer(gemini, async (gBase) => {
+      for (const status of [429, 503]) {
+        await withServer((req, res) => { res.writeHead(status); res.end('{}'); }, async (base) => {
+          const spoken = []; let note = '';
+          const r = await ask({ question: 'oi', history: [] }, { settings, key: 'g', endpoint: base, fallback: { key: 'gem', endpoint: gBase, name: 'Gemini', model: 'gemini-x' }, onSentence: (t) => spoken.push(t), onFallback: (m) => { note = m; } });
+          assert.strictEqual(r.provider, 'Gemini');
+          assert.deepStrictEqual(spoken, ['Aqui é o reserva, Axl.']);
+          assert.match(note, /Groq/);
+        });
+      }
+      // sem conexão com o Groq
+      const r2 = await ask({ question: 'oi', history: [] }, { settings, key: 'g', endpoint: 'http://127.0.0.1:1/v1', fallback: { key: 'gem', endpoint: gBase, name: 'Gemini', model: 'gemini-x' }, onSentence() {} });
+      assert.strictEqual(r2.provider, 'Gemini');
+      assert.strictEqual(seen.at(-1).auth, 'Bearer gem');
+      assert.strictEqual(seen.at(-1).model, 'gemini-x');
+      assert.strictEqual(seen.at(-1).parallel, false);
+      // chave recusada (401) NÃO usa o reserva: o usuário precisa saber
+      await withServer((req, res) => { res.writeHead(401); res.end('{}'); }, async (base) => {
+        const n = seen.length;
+        const r3 = await ask({ question: 'oi', history: [] }, { settings, key: 'g', endpoint: base, fallback: { key: 'gem', endpoint: gBase, name: 'Gemini', model: 'gemini-x' }, onSentence() {} });
+        assert.match(r3.error, /chave do Groq foi recusada/);
+        assert.strictEqual(seen.length, n);
+      });
+    });
+    // reserva também falha: o erro mostrado é o do reserva
+    await withServer((req, res) => { res.writeHead(429); res.end('{}'); }, async (base) => {
+      const r4 = await ask({ question: 'oi', history: [] }, { settings, key: 'g', endpoint: base, fallback: { key: 'gem', endpoint: base, name: 'Gemini', model: 'm' }, onSentence() {} });
+      assert.match(r4.error, /limite gratuito do Gemini/);
+    });
+    // sem reserva configurada, o erro do Groq aparece como sempre
+    await withServer((req, res) => { res.writeHead(429); res.end('{}'); }, async (base) => {
+      const r5 = await ask({ question: 'oi', history: [] }, { settings, key: 'g', endpoint: base, fallback: null, onSentence() {} });
+      assert.match(r5.error, /limite gratuito do Groq/);
+    });
+  }
+
   console.log('ai: todos os testes passaram');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -44,7 +44,16 @@ src/google.js     Google Agenda e Tarefas: login, renovação do token, eventos 
 src/oauth.js      login OAuth de desktop (navegador do sistema + retorno em 127.0.0.1 + PKCE), serve ao Google e ao Spotify
 src/log.js        registro de diagnóstico (jarvis.log em userData, segredos removidos, cortado em 200 KB), mostrado em Ajustes > Diagnóstico
 src/secrets.js    cofre de segredos cifrado com safeStorage (tokens e credenciais), um arquivo .bin por item
-scripts/          test-ai.js, test-google.js (Google falso), test-spotify.js (Spotify falso), test-tools.js (Groq falso com ferramentas), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
+src/reminders.js  lembretes e timers (reminders.json, relógio único, avisa atrasado se o PC dormiu, descarta o perdido há >24 h)
+src/memory.js     memória de longo prazo (memory.json, até 60 fatos, vai no prompt da IA, visível e apagável em Ajustes)
+src/apps.js       abrir programas SÓ de uma lista permitida (padrões + cadastrados em Ajustes, validados por regex); a IA escolhe um nome do enum, nunca monta comando
+src/windows.js    volume, mudo e bloquear a tela do Windows com scripts FIXOS (sem desligar/reiniciar, de propósito)
+src/usage.js      contador de uso do Whisper (pedidos/dia, segundos/dia e /hora) e aviso perto do limite gratuito
+src/background.js bandeja, fechar = esconder, janela volta ao ouvir "Jarvis" e some depois da conversa, atalhos globais (Ctrl+Alt+J e Ctrl+Alt+M)
+src/updater.js    atualização automática (electron-updater, GitHub Releases), só no app instalado
+build/            ícones gerados por scripts/make-icons.js (icon.ico, icon.png, tray.png)
+.github/workflows testes.yml (testes unitários a cada push) e instalador.yml (gera o .exe ao criar uma tag v*)
+scripts/          test-extras.js (lembretes, memória, programas, Windows, clima, uso, bandeja, atualizador), test-ai.js, test-google.js (Google falso), test-spotify.js (Spotify falso), test-tools.js (Groq falso com ferramentas), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
 renderer/
   mic.js          microfone sempre aberto: segmenta frases por silêncio (pré-roll 400 ms), entrega WAV 16 kHz, escolhe o dispositivo, mensagens de erro
   wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) no começo ou no fim da frase; frases curtas ("para", "obrigado"); comandos de música ("pausa", "próxima", "volume 40")
@@ -67,7 +76,7 @@ npm run dist       # gera dist/Jarvis Setup x.y.z.exe
 
 Atalhos no app: F11 tela cheia, Esc fecha Ajustes ou sai da tela cheia, Ctrl+, abre Ajustes, Ctrl+M liga/desliga a escuta (não existe mais caixa de digitar nem legenda: o Jarvis é só por voz), Esc fecha Ajustes ou para a fala.
 
-Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-tools.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
+Testes: `npm test` (ou um a um: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-tools.js`, `test-extras.js`) e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
 
 ## Arquitetura e decisões que não devem ser desfeitas sem motivo
 
@@ -77,7 +86,7 @@ Testes: `node scripts/test-ai.js`, `test-google.js`, `test-spotify.js`, `test-to
 
 **Settings validados no processo principal** (`sanitize` em `src/settings.js`): faixas limitadas, voz validada por regex, só URLs `http(s)` nos feeds, cidade com coordenadas válidas. Todo campo novo precisa entrar no `DEFAULTS` e no `sanitize`.
 
-**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`, `spotify:status`, `spotify:connect`, `spotify:disconnect`, `media:control`, `log:write`/`log:tail`/`log:clear`/`log:folder`. Novo canal = handler em `main.js` + método no `preload.js`.
+**IPC (canais atuais):** `settings:get`, `settings:set`, `tts:voices`, `tts:synthesize`, `weather:get`, `geo:search`, `shell:open`, `win:fullscreen`, `app:quit`, `ai:ask` (+ evento `ai:sentence` main→renderer), `ai:cancel`, `ai:key-status`, `ai:key-set`, `stt:transcribe`, `google:status`, `google:connect`, `google:disconnect`, `agenda:today`, `spotify:status`, `spotify:connect`, `spotify:disconnect`, `media:control` (inclui `duck`/`unduck`), `memory:list`/`memory:remove`/`memory:clear`, `usage:summary`, `win:wake`, `win:conversation-ended` (+ eventos main→renderer `reminder:fire` e `cmd:toggle-listen`), `log:write`/`log:tail`/`log:clear`/`log:folder`. Novo canal = handler em `main.js` + método no `preload.js`.
 
 **Por que a voz roda no processo principal.** Desde a v1.4.0 o edge-tts exige um header de WebSocket que navegadores não permitem. Só Node funciona. O main devolve um `Buffer` MP3 por IPC e o renderer toca num `<audio>`.
 
@@ -124,6 +133,23 @@ Tipografia: Saira Condensed 200/300 só nos números grandes (hora, temperatura)
 
 Regras de estilo a manter: rótulos em caixa normal (sem CAIXA ALTA), sem numeração decorativa, sem "→" em botões, sem animações espalhadas (a única animação autônoma é a esfera montando e o texto entrando uma vez), `prefers-reduced-motion` respeitado, foco visível. Textos de erro explicam o que houve e o que fazer, sem pedir desculpas.
 
+## Fase 5: melhorias (FEITA, só testada por simulação)
+
+- **Som de confirmação** (`renderer/earcon.js`, Web Audio, sem arquivo): toca ao entender o comando e ao ligar/desligar a escuta. Opção `earcons`.
+- **Música abaixa enquanto o Jarvis fala** (`duck`/`unduck` em `src/spotify.js`): baixa para 30 % (mínimo a partir de 12), volta 1,4 s depois de ele calar; guarda o volume original em `spotify-duck` para restaurar se o app caiu (`restoreAfterCrash`, ignora estado com mais de 15 min) e não restaura se você mexeu no volume. Erros de ducking nunca falam. Opção `duckMusic`.
+- **Ferramentas novas da IA** (`src/tools.js`): `lembrete_criar` (minutos ou data ISO; timer = lembrete curto), `lembretes_listar`, `lembrete_cancelar`, `memoria_guardar`, `memoria_esquecer`, `clima` (Open-Meteo, 1 a 7 dias, `feeds.getForecast`), `noticias` (usa a busca da internet), `abrir_programa` (enum dinâmico), `windows_controlar` (só no Windows). O lembrete dispara no main (`reminder:fire`) e o renderer fala "Axl, lembrete: ..." quando está livre (`flushReminders`). Programas cadastrados em Ajustes (linha `nome | caminho`), aceitam só `.exe/.lnk/.bat/.cmd` em caminho de disco, http(s) ou atalhos conhecidos (`isValidTarget`).
+- **Memória**: fatos guardados vão no prompt (`memoryBlock`). Ajustes > Memória lista, apaga um ou tudo.
+- **IA reserva (Gemini)**: chave em `ai-key-gemini.bin`; endpoint compatível com OpenAI (`generativelanguage.googleapis.com/v1beta/openai/chat/completions`, modelo `fallbackModel`). Só entra se o Groq der 429, 5xx ou ficar sem conexão E nada foi falado ainda naquela volta; 401/403 NÃO usam o reserva (o usuário precisa saber da chave). Uma vez trocado, a pergunta toda segue no Gemini. Gemini não recebe `parallel_tool_calls`.
+- **Cache de voz aquecido**: 45 s depois do boot, `tts.prewarm` prepara as frases curtas fixas (para na primeira falha, ou seja, sem internet); o cache é LRU (acesso renova a data).
+- **Cota do Whisper**: `src/usage.js` conta pedidos e segundos (mínimo 10 s cobrados por pedido); o aviso sai no `notice` e o resumo aparece no topo do Diagnóstico.
+- **Segundo plano**: `backgroundMode` (padrão ligado). Fechar a janela esconde; `backgroundThrottling: false` mantém microfone e lembretes vivos; ao entender um comando, `win:wake` mostra a janela, e no fim da conversa (`FOLLOW_UP_MS`+1,5 s ocioso) `win:conversation-ended` esconde se foi o "Jarvis" que a mostrou. A esfera não desenha com `document.hidden`. Abrir pelo login continua mostrando a janela (o resumo falado e a esfera ao ligar o PC).
+- **Captura do microfone em AudioWorklet** (`renderer/mic-worklet.js`), com queda para ScriptProcessor se o módulo não carregar.
+- **Instalador e atualização**: `npm run dist`; tag `v*` aciona `.github/workflows/instalador.yml`. **O repositório é privado**: o `electron-updater` precisa de um repositório público de lançamentos para baixar sem chave (hoje a checagem falha com 404, só no diagnóstico). Decisão pendente do Axl: tornar o repositório público (nada secreto está nele) ou criar um repositório só de lançamentos.
+
+**Não entregues (de propósito):** palavra de ativação local (exige modelo local ou WASM, impossível de medir no i3 daqui, e as opções boas pedem chave da Picovoice) e voz em streaming (exige MediaSource e validação real do edge-tts). No lugar: cache aquecido e contador de cota.
+
+**Nunca testado em Windows real (Fase 5):** controle de volume e bloqueio de tela, bandeja, atalhos globais, `openPath` dos programas, instalador, atualizador, AudioWorklet com microfone real, Gemini real, `backgroundThrottling` com a janela escondida.
+
 ## O que foi testado e o que NÃO foi
 
 Testado (Electron 44 em Linux com display virtual, harness com IPC simulado e `capturePage`; WebGL só pelo `shot-orb.js`): renderização WebGL, os 4 estados da esfera, layout em 1366×768, 1920×1080 e 900×700, Ajustes, mensagens de erro offline, fluxo do resumo com a voz online indisponível (timeout e reserva), validação e persistência de settings, parser de RSS.
@@ -144,7 +170,7 @@ Para testar a interface sem rede, o padrão que funcionou foi um script Electron
 
 ## Configurações (`settings.json`, em `%APPDATA%\jarvis`)
 
-`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `aiModel`, `sttModel`, `webSearch`, `webModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`.
+`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `aiModel`, `sttModel`, `webSearch`, `webModel`, `bargeIn`, `listenOnStart`, `micLabel`, `micCompat`, `duckMusic`, `earcons`, `apps [{name,target}]`, `fallbackModel`, `backgroundMode`, `autoUpdate`.
 
 ## Roadmap
 

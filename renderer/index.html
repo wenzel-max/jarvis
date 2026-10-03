@@ -64,6 +64,10 @@
         <label class="field"><span>Microfone</span>
           <select id="set-mic"></select>
         </label>
+        <label class="check"><input id="set-background" type="checkbox"><span>Ao fechar a janela, ficar na bandeja ouvindo (Ctrl+Alt+J mostra ou esconde, Ctrl+Alt+M liga ou desliga a escuta)</span></label>
+        <label class="check"><input id="set-autoupdate" type="checkbox"><span>Procurar versões novas do Jarvis sozinho</span></label>
+        <label class="check"><input id="set-duck" type="checkbox"><span>Abaixar a música enquanto o Jarvis fala</span></label>
+        <label class="check"><input id="set-earcons" type="checkbox"><span>Tocar um som curto quando ele me entende</span></label>
         <label class="check"><input id="set-bargein" type="checkbox"><span>Poder interromper o Jarvis falando por cima</span></label>
         <p class="hint">Use com fone. Com caixas de som, o eco da voz dele pode fazê-lo se interromper sozinho; nesse caso desligue esta opção.</p>
         <label class="check"><input id="set-listen" type="checkbox"><span>Ouvir o tempo todo (diga "Jarvis")</span></label>
@@ -164,6 +168,14 @@
           <button id="btn-ai-getkey" type="button" class="btn btn-quiet">Criar chave grátis</button>
         </div>
         <p id="ai-msg" class="hint" hidden></p>
+        <p id="ai-fb-status" class="hint"></p>
+        <label class="field"><span>Chave do Gemini (reserva, gratuita)</span>
+          <input id="set-ai-fbkey" type="password" autocomplete="off" spellcheck="false" placeholder="AIza...">
+        </label>
+        <div class="row wrap">
+          <button id="btn-ai-fbkey" type="button" class="btn">Salvar chave de reserva</button>
+          <button id="btn-ai-fbget" type="button" class="btn btn-quiet">Criar chave grátis</button>
+        </div>
         <label class="check"><input id="set-websearch" type="checkbox"><span>Pesquisar na internet quando precisar</span></label>
         <label class="field"><span>Modelo das respostas</span>
           <input id="set-ai-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
@@ -191,6 +203,20 @@
           <button type="button" class="btn" data-preview="thinking">Pensando</button>
           <button type="button" class="btn" data-preview="speaking">Falando</button>
         </div>
+      </section>
+
+      <section class="group">
+        <h3>Programas que o Jarvis pode abrir</h3>
+        <p class="hint">Já valem calculadora, bloco de notas, explorador de arquivos, gerenciador de tarefas, configurações e navegador. Para incluir outros, escreva um por linha: nome | caminho completo do .exe (ou endereço).</p>
+        <textarea id="set-apps" class="diag" rows="4" spellcheck="false" placeholder="Word | C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"></textarea>
+        <div class="row wrap"><button id="btn-apps-save" type="button" class="btn">Salvar programas</button><span id="apps-status" class="hint"></span></div>
+      </section>
+
+      <section class="group">
+        <h3>Memória</h3>
+        <p class="hint">O que o Jarvis guardou sobre você a seu pedido ("lembra que..."). Fica só neste computador.</p>
+        <ul id="memory-list" class="memory"></ul>
+        <div class="row wrap"><button id="btn-memory-clear" type="button" class="btn btn-quiet">Apagar tudo</button></div>
       </section>
 
       <section class="group">

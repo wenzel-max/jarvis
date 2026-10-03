@@ -147,3 +147,8 @@ input[type="range"] { width: 100%; accent-color: var(--ember); }
 
 .btn.is-on { border-color: var(--ember); }
 .hud[data-state="listening"] #btn-mic { background: rgba(255, 154, 31, 0.18); }
+
+.memory { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; font-size: 0.88rem; }
+.memory li { display: flex; justify-content: space-between; gap: 0.6rem; align-items: baseline; }
+.memory button { background: none; border: 0; color: var(--dim); cursor: pointer; font: inherit; text-decoration: underline; }
+.memory button:hover, .memory button:focus-visible { color: var(--gold); }

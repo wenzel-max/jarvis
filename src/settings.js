@@ -1,4 +1,5 @@
 'use strict';
+const { isValidTarget } = require('./apps');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -14,9 +15,15 @@ const DEFAULTS = {
   speakOnStart: true,
   fullscreen: true,
   aiModel: 'llama-3.1-8b-instant',  // modelo do Groq usado nas perguntas
+  fallbackModel: 'gemini-2.5-flash',  // modelo do Gemini usado quando o Groq está limitado ou fora do ar
   sttModel: 'whisper-large-v3-turbo', // modelo do Groq que transcreve a fala
   webSearch: true,             // a IA pode pesquisar na internet (modelo Compound do Groq)
   webModel: 'groq/compound-mini',
+  duckMusic: true,             // abaixa a música do Spotify enquanto o Jarvis fala
+  earcons: true,               // sons curtos de confirmação (reconheceu o pedido, escuta ligada/desligada)
+  apps: [],                    // programas extras que o Jarvis pode abrir: [{ name, target }]
+  autoUpdate: true,            // procura versões novas no GitHub (só no app instalado)
+  backgroundMode: true,        // fechar a janela deixa o Jarvis na bandeja, ouvindo; "Jarvis" faz a janela voltar
   bargeIn: true,               // falar por cima interrompe o Jarvis (desligue se usar caixas de som e ele se ouvir)
   listenOnStart: true,         // microfone sempre aberto ao iniciar (o Jarvis só age quando ouve "Jarvis")
   micCompat: false,            // desliga o sandbox de áudio do Chromium (para drivers que não abrem o microfone)
@@ -45,11 +52,19 @@ function sanitize(raw) {
   out.speakOnStart = !!out.speakOnStart;
   out.fullscreen = !!out.fullscreen;
   out.bargeIn = !!out.bargeIn;
+  out.earcons = !!out.earcons;
+  out.backgroundMode = !!out.backgroundMode;
+  out.autoUpdate = !!out.autoUpdate;
+  out.duckMusic = !!out.duckMusic;
   out.webSearch = !!out.webSearch;
   out.listenOnStart = !!out.listenOnStart;
   out.micCompat = !!out.micCompat;
+  out.apps = (Array.isArray(out.apps) ? out.apps : [])
+    .filter((a) => a && typeof a.name === 'string' && a.name.trim() && isValidTarget(a.target))
+    .slice(0, 20)
+    .map((a) => ({ name: a.name.trim().slice(0, 40), target: a.target }));
   out.micLabel = typeof out.micLabel === 'string' ? out.micLabel.trim().slice(0, 120) : '';
-  for (const k of ['aiModel', 'sttModel', 'webModel']) {
+  for (const k of ['aiModel', 'sttModel', 'webModel', 'fallbackModel']) {
     out[k] = typeof out[k] === 'string' && /^[A-Za-z0-9._\/:-]{1,80}$/.test(out[k].trim()) ? out[k].trim() : DEFAULTS[k];
   }
 
@@ -85,4 +100,4 @@ function update(patch) {
   return data;
 }
 
-module.exports = { init, get, update, DEFAULTS };
+module.exports = { init, get, update, DEFAULTS, sanitize };

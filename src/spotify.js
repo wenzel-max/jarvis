@@ -223,6 +223,54 @@ async function nowPlaying() {
   return { playing: !!j.is_playing, name: j.item.name, by: (j.item.artists ?? []).map((a) => a.name).slice(0, 2).join(' e ') };
 }
 
+// ---------- abaixar a música enquanto o Jarvis fala ----------
+const DUCK_FACTOR = 0.3;
+const DUCK_MIN_FROM = 12;           // com o volume já muito baixo não há o que abaixar
+const DUCK_SECRET = 'spotify-duck';
+let ducked = null;                  // { from, to, device, at }
+let chain = Promise.resolve();      // uma chamada de ducking por vez: abaixar e restaurar nunca se atropelam
+
+const serial = (fn) => (chain = chain.then(fn, fn));
+
+/** Abaixa o volume do Spotify (só se estiver tocando). Devolve true se abaixou. */
+function duck() {
+  return serial(async () => {
+    if (ducked) return false;
+    const state = await api('GET', '/me/player');
+    const from = state?.device?.volume_percent;
+    if (!state?.is_playing || from == null || from < DUCK_MIN_FROM) return false;
+    const to = Math.max(6, Math.round(from * DUCK_FACTOR));
+    await api('PUT', '/me/player/volume', { query: { volume_percent: String(to), device_id: state.device.id } });
+    ducked = { from, to, device: state.device.id, at: Date.now() };
+    try { secrets.set(DUCK_SECRET, ducked); } catch { /* sem cofre: o ducking funciona, só não sobrevive a uma queda */ }
+    return true;
+  });
+}
+
+/** Devolve o volume de antes, a menos que você tenha mexido nele nesse meio tempo. */
+function unduck() {
+  return serial(async () => {
+    if (!ducked) return false;
+    const d = ducked;
+    ducked = null;
+    secrets.remove(DUCK_SECRET);
+    const state = await api('GET', '/me/player');
+    const now = state?.device?.volume_percent;
+    if (now == null || Math.abs(now - d.to) > 3) return false;   // você mudou o volume: respeita
+    await api('PUT', '/me/player/volume', { query: { volume_percent: String(d.from), device_id: d.device } });
+    return true;
+  });
+}
+
+/** Se o app fechou no meio de uma fala, o volume ficou baixo: restaura ao iniciar (só se foi há pouco). */
+async function restoreAfterCrash() {
+  const d = secrets.get(DUCK_SECRET);
+  if (!d) return false;
+  if (Date.now() - d.at > 15 * 60000) { secrets.remove(DUCK_SECRET); return false; }
+  ducked = d;
+  return unduck().catch(() => false);
+}
+
 /** Comandos curtos, sem passar pela IA ("pausa", "próxima", "volume 40"). Devolve uma frase só se houver algo a dizer. */
 async function control(action, value) {
   switch (action) {
@@ -233,6 +281,8 @@ async function control(action, value) {
     case 'volume': await setVolume(value); return '';
     case 'louder': await changeVolume(+15); return '';
     case 'quieter': await changeVolume(-15); return '';
+    case 'duck': await duck(); return '';
+    case 'unduck': await unduck(); return '';
     case 'now': {
       const n = await nowPlaying();
       return n ? `${n.playing ? 'Está tocando' : 'Pausado'}: ${n.name}${n.by ? `, de ${n.by}` : ''}.` : 'Não tem nada tocando agora.';
@@ -276,5 +326,6 @@ const handlers = {
 module.exports = {
   init, status, connect, disconnect, SpotifyError, REDIRECT_URI, REDIRECT_PORT,
   find, play, pause, resume, next, previous, setVolume, changeVolume, nowPlaying, control, pickDevice,
+  duck, unduck, restoreAfterCrash,
   definitions, handlers,
 };

@@ -8,10 +8,12 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "test": "node scripts/test-ai.js && node scripts/test-google.js && node scripts/test-spotify.js && node scripts/test-tools.js && node scripts/test-extras.js && node scripts/test-wake.mjs",
     "dist": "electron-builder --win"
   },
   "dependencies": {
-    "edge-tts-universal": "^1.4.0"
+    "edge-tts-universal": "^1.4.0",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^44.5.1",
@@ -28,11 +30,15 @@
       "preload.js",
       "src/**",
       "renderer/**",
+      "build/icon.png",
+      "build/tray.png",
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
+    "publish": [{ "provider": "github", "owner": "wenzel-max", "repo": "jarvis" }],
     "nsis": {
       "oneClick": true,
       "perMachine": false

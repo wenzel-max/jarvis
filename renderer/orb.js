@@ -577,6 +577,7 @@ export class Orb {
 
   _loop(now) {
     this._raf = requestAnimationFrame((t) => this._loop(t));
+    if (document.hidden) { this._last = now; return; }   // janela escondida na bandeja: não desenha nada
 
     // ocioso = 30 quadros/s para poupar CPU/GPU; ativo = 60
     const minDt = this.state === 'idle' ? 1000 / 30 : 1000 / 60;

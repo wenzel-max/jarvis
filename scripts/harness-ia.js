@@ -13,6 +13,7 @@ const settings = {
   userName: 'Axl', userNameSpoken: '', voice: 'pt-BR-AntonioNeural', rate: 0, pitch: 0,
   city: { name: 'Natal', admin: 'Rio Grande do Norte', lat: -5.79, lon: -35.2 },
   autostart: false, startDelaySec: 0, speakOnStart: false, fullscreen: false, listenOnStart: false, bargeIn: true,
+  duckMusic: true, earcons: true, apps: [], backgroundMode: true, autoUpdate: true,
   aiModel: 'llama-3.1-8b-instant', sttModel: 'whisper-large-v3-turbo', micLabel: '', micCompat: false,
 };
 let aiMode = 'ok';
@@ -22,6 +23,11 @@ let googleExpired = false;
 let spotifyOn = false;
 let mediaError = '';
 const mediaCalls = [];
+let hasFallbackKey = false;
+let wakeCalls = 0;
+let endCalls = 0;
+const keySets = [];
+const memoryFacts = [{ id: 'a1', text: 'O time do Axl é o Flamengo' }, { id: 'b2', text: 'Axl mora em Ceará-Mirim' }];
 const googleCalls = [];
 const asked = [];     // perguntas que chegaram à IA
 const heard = [];     // trechos de áudio enviados para transcrição { bytes, mime, at }
@@ -40,7 +46,10 @@ function wav(sec) {
 
 function fakeIpc() {
   ipcMain.handle('settings:get', () => settings);
-  ipcMain.handle('settings:set', (_e, p) => Object.assign(settings, p));
+  ipcMain.handle('settings:set', (_e, p) => {
+    if (p && Array.isArray(p.apps)) p = { ...p, apps: p.apps.filter((a) => require('../src/apps').isValidTarget(a.target)) };   // o main de verdade valida igual
+    return Object.assign(settings, p);
+  });
   ipcMain.handle('tts:voices', () => []);
   ipcMain.handle('tts:synthesize', async (_e, opts) => {
     spoken.push(opts.text);
@@ -56,8 +65,15 @@ function fakeIpc() {
   ipcMain.handle('win:fullscreen', () => false);
   ipcMain.handle('app:quit', () => app.quit());
   ipcMain.handle('app:relaunch', () => {});
-  ipcMain.handle('ai:key-status', () => ({ hasKey: true }));
-  ipcMain.handle('ai:key-set', (_e, k) => (k.length < 20 ? { ok: false, error: 'A chave tem formato inválido.' } : { ok: true, hasKey: true }));
+  ipcMain.handle('ai:key-status', () => ({ hasKey: true, hasFallbackKey }));
+  ipcMain.handle('usage:summary', () => 'Whisper nas últimas 24 h: 3 de 2000 pedidos (0%).');
+  ipcMain.handle('win:wake', () => { wakeCalls++; });
+  ipcMain.handle('win:conversation-ended', () => { endCalls++; });
+  ipcMain.handle('ai:key-set', (_e, k, provider) => {
+    if (k && k.length < 20) return { ok: false, error: 'A chave tem formato inválido.' };
+    if (provider === 'gemini') { hasFallbackKey = !!k; keySets.push(provider); }
+    return { ok: true, hasKey: true, hasFallbackKey };
+  });
   ipcMain.handle('stt:transcribe', async (_e, req) => {
     const bytes = req.audio?.byteLength ?? req.audio?.length ?? 0;
     heard.push({ bytes, mime: req.mime, at: Date.now() });
@@ -100,6 +116,9 @@ function fakeIpc() {
     if (mediaError) return { ok: false, error: mediaError };
     return { ok: true, message: req.action === 'now' ? 'Está tocando: Pais e Filhos, de Legião Urbana.' : '' };
   });
+  ipcMain.handle('memory:list', () => memoryFacts.slice());
+  ipcMain.handle('memory:remove', (_e, id) => { const i = memoryFacts.findIndex((f) => f.id === id); if (i >= 0) memoryFacts.splice(i, 1); return memoryFacts.slice(); });
+  ipcMain.handle('memory:clear', () => { memoryFacts.length = 0; return []; });
   ipcMain.handle('log:write', (_e, kind, text) => { logLines.push(`[${kind}] ${text}`); });
   ipcMain.handle('log:tail', () => logLines.slice(-40).join('\n'));
   ipcMain.handle('log:clear', () => { logLines.length = 0; return true; });
@@ -479,6 +498,44 @@ app.whenReady().then(async () => {
   await click(win, '#btn-s-disconnect');
   await sleep(500);
   check('desconectar o Spotify volta "pausa" para a IA', !spotifyOn && /Não conectado/.test(await js(win, "document.querySelector('#spotify-status').textContent")));
+  await click(win, '#settings-close');
+  await sleep(300);
+
+  // ---- lembretes, memória, programas e música abaixando ----
+  const spokenR = spoken.length;
+  win.webContents.send('reminder:fire', { id: 'r1', text: 'tirar o macarrão', at: Date.now(), kind: 'lembrete', late: false });
+  await sleep(2500);
+  await settle();
+  check('lembrete é falado com o nome e o texto', spoken.slice(spokenR).some((t) => /Axl, lembrete: tirar o macarrão/.test(t)), JSON.stringify(spoken.slice(spokenR)));
+  const spokenT = spoken.length;
+  win.webContents.send('reminder:fire', { id: 'r2', text: 'timer', at: Date.now(), kind: 'timer', late: false });
+  await sleep(2500);
+  await settle();
+  check('timer é falado', spoken.slice(spokenT).some((t) => /seu timer acabou/.test(t)), JSON.stringify(spoken.slice(spokenT)));
+  check('a música abaixou ao falar e voltou depois', mediaCalls.some((c) => c.action === 'duck') && mediaCalls.at(-1)?.action === 'unduck', JSON.stringify(mediaCalls.slice(-4)));
+  await click(win, '#btn-settings');
+  await sleep(300);
+  check('Ajustes lista a memória', (await js(win, "document.querySelectorAll('#memory-list li').length")) === 2);
+  await js(win, "void document.querySelector('#memory-list li button').click()");
+  await sleep(300);
+  check('"esquecer" tira um fato da lista', (await js(win, "document.querySelectorAll('#memory-list li').length")) === 1 && memoryFacts.length === 1);
+  await js(win, "void (document.querySelector('#set-apps').value = 'Word | C:\\\\Office\\\\winword.exe\\nMau | rm -rf /')");
+  await click(win, '#btn-apps-save');
+  await sleep(300);
+  check('programas: linha inválida é recusada e avisada', settings.apps.length === 1 && /ignoradas/.test(await js(win, "document.querySelector('#apps-status').textContent")), JSON.stringify(settings.apps));
+  check('Ajustes mostra "Sem reserva" sem a chave do Gemini', /Sem reserva/.test(await js(win, "document.querySelector('#ai-fb-status').textContent")));
+  await js(win, "void (document.querySelector('#set-ai-fbkey').value = 'AIzaSyFakeKeyFakeKeyFakeKeyFake12345')");
+  await click(win, '#btn-ai-fbkey');
+  await sleep(300);
+  check('salvar a chave do Gemini ativa a reserva', hasFallbackKey && keySets.includes('gemini') && /Reserva ativa/.test(await js(win, "document.querySelector('#ai-fb-status').textContent")));
+  await click(win, '#set-background'); await click(win, '#set-autoupdate');
+  await sleep(200);
+  check('bandeja e atualização automática salvam nos Ajustes', settings.backgroundMode === false && settings.autoUpdate === false, JSON.stringify([settings.backgroundMode, settings.autoUpdate]));
+  check('Diagnóstico mostra o uso do Whisper', /Whisper nas últimas 24 h/.test(await js(win, "document.querySelector('#diag-log').value")));
+  check('o app chamou a janela quando ouviu um comando', wakeCalls > 0, String(wakeCalls));
+  await click(win, '#btn-memory-clear');
+  await sleep(300);
+  check('"apagar tudo" limpa a memória', memoryFacts.length === 0 && /Nada guardado/.test(await js(win, "document.querySelector('#memory-list').textContent")));
   await click(win, '#settings-close');
   await sleep(300);
 
