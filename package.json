@@ -1,0 +1,41 @@
+{
+  "name": "jarvis",
+  "version": "0.1.0",
+  "description": "Jarvis: assistente pessoal de desktop (esfera dourada, clima, notícias, voz).",
+  "main": "main.js",
+  "author": "Axl",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "edge-tts-universal": "^1.4.0"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.axl.jarvis",
+    "productName": "Jarvis",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**",
+      "renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  }
+}

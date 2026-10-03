@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'">
+  <title>Jarvis</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="hud" class="hud" data-state="idle">
+    <canvas id="orb" aria-hidden="true"></canvas>
+    <div class="vignette" aria-hidden="true"></div>
+
+    <section class="side side-left" aria-label="Hora e clima">
+      <div class="clock">
+        <time id="clock" class="clock-time">--:--</time>
+        <p id="date" class="clock-date"></p>
+      </div>
+      <div id="weather" class="weather" aria-live="polite">
+        <p class="muted">Carregando o clima…</p>
+      </div>
+    </section>
+
+    <section class="center">
+      <p id="caption" class="caption" aria-live="polite"></p>
+    </section>
+
+    <section class="side side-right" aria-label="Notícias">
+      <h2 class="side-title">Notícias</h2>
+      <ul id="news" class="news">
+        <li class="muted">Carregando notícias…</li>
+      </ul>
+    </section>
+
+    <footer class="bar">
+      <p id="status" class="status"><span class="dot" aria-hidden="true"></span><span id="status-text">Pronto</span></p>
+      <div class="bar-actions">
+        <button id="btn-stop" type="button" class="btn" hidden>Parar</button>
+        <button id="btn-brief" type="button" class="btn">Resumo do dia</button>
+        <button id="btn-settings" type="button" class="btn">Ajustes</button>
+      </div>
+    </footer>
+  </main>
+
+  <aside id="settings" class="drawer" hidden aria-labelledby="settings-title">
+    <header class="drawer-head">
+      <h2 id="settings-title">Ajustes</h2>
+      <button id="settings-close" type="button" class="btn">Fechar</button>
+    </header>
+
+    <div class="drawer-body">
+      <section class="group">
+        <h3>Voz</h3>
+        <label class="field"><span>Voz do Jarvis</span>
+          <select id="set-voice"></select>
+        </label>
+        <label class="field"><span>Velocidade <output id="out-rate">0%</output></span>
+          <input id="set-rate" type="range" min="-30" max="30" step="5">
+        </label>
+        <label class="field"><span>Tom <output id="out-pitch">0 Hz</output></span>
+          <input id="set-pitch" type="range" min="-20" max="20" step="2">
+        </label>
+        <button id="btn-sample" type="button" class="btn">Ouvir amostra</button>
+      </section>
+
+      <section class="group">
+        <h3>Você</h3>
+        <label class="field"><span>Seu nome</span>
+          <input id="set-name" type="text" maxlength="40" autocomplete="off">
+        </label>
+        <label class="field"><span>Como o Jarvis deve pronunciar</span>
+          <input id="set-name-spoken" type="text" maxlength="40" autocomplete="off" placeholder="Igual ao nome">
+        </label>
+      </section>
+
+      <section class="group">
+        <h3>Clima</h3>
+        <p id="city-current" class="hint"></p>
+        <div class="row">
+          <input id="city-query" type="search" placeholder="Buscar outra cidade" autocomplete="off">
+          <button id="btn-city" type="button" class="btn">Buscar</button>
+        </div>
+        <p id="city-msg" class="hint" hidden></p>
+        <ul id="city-results" class="results"></ul>
+      </section>
+
+      <section class="group">
+        <h3>Notícias</h3>
+        <label class="field"><span>Fontes, uma por linha: Nome | endereço do feed RSS</span>
+          <textarea id="set-feeds" rows="4" spellcheck="false"></textarea>
+        </label>
+      </section>
+
+      <section class="group">
+        <h3>Ao ligar o PC</h3>
+        <label class="check"><input id="set-autostart" type="checkbox"><span>Abrir o Jarvis ao ligar o PC</span></label>
+        <label class="check"><input id="set-speak" type="checkbox"><span>Falar o resumo do dia ao abrir</span></label>
+        <label class="check"><input id="set-fullscreen" type="checkbox"><span>Abrir em tela cheia</span></label>
+        <label class="field"><span>Esperar após ligar, em segundos</span>
+          <input id="set-delay" type="number" min="0" max="180" step="5">
+        </label>
+      </section>
+
+      <section class="group">
+        <h3>Prévia da esfera</h3>
+        <div class="row wrap">
+          <button type="button" class="btn" data-preview="idle">Ocioso</button>
+          <button type="button" class="btn" data-preview="listening">Ouvindo</button>
+          <button type="button" class="btn" data-preview="thinking">Pensando</button>
+          <button type="button" class="btn" data-preview="speaking">Falando</button>
+        </div>
+      </section>
+
+      <section class="group">
+        <button id="btn-quit" type="button" class="btn btn-quiet">Fechar o Jarvis</button>
+      </section>
+    </div>
+  </aside>
+
+  <audio id="voice-audio" preload="auto"></audio>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
