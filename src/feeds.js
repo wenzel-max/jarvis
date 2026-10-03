@@ -72,13 +72,25 @@ function parseFeed(xml, source) {
   }).filter((i) => i.title && /^https?:\/\//i.test(i.link));
 }
 
+/** Alguns feeds (ex.: Folha) vêm em ISO-8859-1; ler tudo como UTF-8 estraga os acentos. */
+function decodeBody(buf, contentType) {
+  const head = buf.subarray(0, 200).toString('latin1');
+  const label = (/charset=["']?([\w-]+)/i.exec(contentType || '') || /encoding=["']([\w-]+)["']/i.exec(head) || [])[1] || 'utf-8';
+  try {
+    return new TextDecoder(label).decode(buf);
+  } catch {
+    return buf.toString('utf8');
+  }
+}
+
 async function fetchFeed(feed) {
   const res = await fetch(feed.url, {
     signal: AbortSignal.timeout(10000),
     headers: { 'User-Agent': UA, Accept: 'application/rss+xml, application/xml, text/xml, */*' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return parseFeed(await res.text(), feed.name).slice(0, 3);
+  const xml = decodeBody(Buffer.from(await res.arrayBuffer()), res.headers.get('content-type'));
+  return parseFeed(xml, feed.name).slice(0, 3);
 }
 
 /** Até 3 manchetes por fonte, as mais recentes primeiro. Fonte fora do ar não derruba as outras. */
@@ -91,4 +103,4 @@ async function getNews(feeds) {
   return { items: items.slice(0, 9), failed, total: list.length };
 }
 
-module.exports = { getWeather, searchCity, getNews };
+module.exports = { getWeather, searchCity, getNews, decodeBody };
