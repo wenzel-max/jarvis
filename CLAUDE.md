@@ -39,9 +39,10 @@ src/tts.js        síntese edge-tts, cache em disco, timeout, lista de vozes pt-
 src/feeds.js      clima, busca de cidade, notícias RSS (decodifica ISO-8859-1)
 src/compat.js     modo de compatibilidade do microfone (desliga o sandbox de áudio do Chromium)
 src/ai.js         perguntas à IA (Groq, streaming), chave cifrada com safeStorage, divisão em frases
-scripts/          test-ai.js (servidor falso, sem rede) e harness-ia.js (Electron + IPC simulado + capturas)
+scripts/          test-ai.js (servidor falso), test-wake.mjs (palavra de ativação), harness-ia.js (Electron + IPC simulado + microfone sintético + capturas)
 renderer/
-  mic.js          microfone: grava com detecção de silêncio, mede o volume, mensagens de erro de permissão
+  mic.js          microfone sempre aberto: segmenta frases por silêncio (pré-roll 400 ms), entrega WAV 16 kHz, escolhe o dispositivo, mensagens de erro
+  wake.js         palavra de ativação "Jarvis" (variações do Whisper: Jarves, Garvis...) nas 4 primeiras palavras
   index.html      estrutura + CSP + drawer de Ajustes
   styles.css      tokens, layout em grid, drawer
   app.js          orquestração: estados, relógio, clima, notícias, resumo, Ajustes
@@ -59,9 +60,9 @@ npm start          # roda em desenvolvimento
 npm run dist       # gera dist/Jarvis Setup x.y.z.exe
 ```
 
-Atalhos no app: F11 tela cheia, Esc fecha Ajustes ou sai da tela cheia, Ctrl+, abre Ajustes, Ctrl+K foca a caixa de pergunta, Ctrl+M liga/desliga a escuta (Esc cancela).
+Atalhos no app: F11 tela cheia, Esc fecha Ajustes ou sai da tela cheia, Ctrl+, abre Ajustes, Ctrl+M liga/desliga a escuta (não existe mais caixa de digitar: o Jarvis é só por voz), Esc para a fala.
 
-Testes: `node scripts/test-ai.js` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
+Testes: `node scripts/test-ai.js` e `node scripts/test-wake.mjs` (sem rede) e `xvfb-run -a npx electron --no-sandbox scripts/harness-ia.js` (Linux; salva capturas em `scripts/out/`, ignorado pelo git).
 
 ## Arquitetura e decisões que não devem ser desfeitas sem motivo
 
@@ -117,7 +118,7 @@ Para testar a interface sem rede, o padrão que funcionou foi um script Electron
 
 ## Configurações (`settings.json`, em `%APPDATA%\jarvis`)
 
-`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `feeds [{name, url}]`, `aiModel`, `sttModel`, `micLabel`, `micCompat`.
+`userName`, `userNameSpoken`, `voice`, `rate` (-50..50 %), `pitch` (-30..30 Hz), `city {name, admin, lat, lon}` (padrão Ceará-Mirim, RN), `autostart`, `startDelaySec` (0..180), `speakOnStart`, `fullscreen`, `feeds [{name, url}]`, `aiModel`, `sttModel`, `listenOnStart`, `micLabel`, `micCompat`.
 
 ## Roadmap
 
@@ -125,7 +126,13 @@ Para testar a interface sem rede, o padrão que funcionou foi um script Electron
 
 **Fase 3: perguntas e respostas com IA (FEITA, falta testar em Windows real).** Groq (`llama-3.1-8b-instant` por padrão, editável em Ajustes), chave cifrada em `ai-key.bin` com `safeStorage` (nunca vai ao renderer nem ao `settings.json`). A resposta chega em streaming, `src/ai.js` corta em frases e o renderer as empurra numa fila assíncrona que `Voice.speakSequence` consome (aceita lista ou iterável assíncrono). Histórico das últimas 8 mensagens fica só no renderer, validado no main. Limites gratuitos conferidos por busca (30 req/min; 8b: ~14,4 mil req e 500 mil tokens/dia; 70b: 1 mil req e 100 mil tokens/dia), mas a página oficial estava bloqueada no ambiente: confirmar em console.groq.com/docs/rate-limits. Se o Groq recusar o modelo (ID renomeado/aposentado), `ai.ask` consulta `/models` da conta, escolhe outro (`PREFERRED`), tenta de novo e o `main.js` grava o que funcionou em `aiModel`. Pendente: reserva offline com Ollama (opcional). Texto original do plano: Caixa de texto + resposta falada, estados `thinking` e `speaking` da esfera já prontos. API gratuita (Gemini ou Groq) como principal, com a chave guardada via `safeStorage`; reserva opcional em Ollama com modelo pequeno. Os limites gratuitos mudam, confirmar na documentação oficial antes de implementar. Streaming de resposta falando frase a frase (reaproveitar `speakSequence`).
 
-**Fase 4: voz de entrada (FEITA, falta testar em Windows real).** Escolhido o Whisper do Groq (mesma chave da Fase 3; limites gratuitos por busca: 20 req/min, 2 mil req/dia, 7.200 s de áudio/hora). `renderer/mic.js` grava (MediaRecorder, webm/opus, 32 kbps) e para sozinho após 1,3 s de silêncio, com limiar adaptativo ao ruído do ambiente (máx. 15 s, desiste após 7 s sem fala); o áudio vai por `stt:transcribe` ao main, que envia `multipart` ao Groq (`language=pt`) e devolve o texto, que segue o fluxo normal de `ask()`. Estado `listening` da esfera pulsa com o volume do microfone. O main só concede permissão de microfone (áudio, sem vídeo) à página local `file://` (`allowMicrophoneOnly`). Modelo em `sttModel` (padrão `whisper-large-v3-turbo`) com troca automática por outro Whisper multilíngue da conta se for recusado (exclui `distil-*` e `-en`, que só falam inglês). Frases de alucinação do Whisper em silêncio ("Legendas pela comunidade Amara.org") são descartadas. O microfone tenta várias aberturas (`Mic._open`: filtros, cru, mono, cada dispositivo) porque o driver Intel Smart Sound "Grupo de microfones" do Chromium dá `NotReadableError` no padrão. O "dispositivo padrão" do Chromium pode ser um microfone VIRTUAL mudo (ex.: Steam Streaming Microphone abre sem erro e só entrega silêncio), então `_open` ordena os candidatos (escolhido em `micLabel` > reais > atalhos do sistema > virtuais, regex `VIRTUAL`), testa cada um com várias configurações e guarda `mic.report` (o que cada dispositivo respondeu), que entra nas mensagens de erro. Ajustes tem seletor de microfone. Se o driver (ex.: Intel Smart Sound "Grupo de microfones") recusar TODAS as aberturas com `Could not start audio source`, o suspeito é o sandbox do serviço de áudio do Chromium: Ajustes tem `micCompat` (`disable-features=AudioServiceSandbox`, aplicado em `src/compat.js` antes do app ficar pronto, por isso exige reiniciar; `app:relaunch`). Desligado por padrão porque isola menos o processo de áudio. Se nem isso resolver, o plano B é outro microfone (USB/fone). O limiar de voz usa o MENOR volume dos primeiros 350 ms (teto 0,035), para não ignorar quem já começa falando ao clicar. `Mic.stats` (dispositivo, pico, ms de fala) alimenta `explainNoSpeech` e o botão Testar microfone nos Ajustes. Sem palavra de ativação: o clique em Falar ou Ctrl+M inicia. Ideia futura: palavra de ativação (exigiria ouvir o tempo todo, pesado para o i3).
+**Fase 4: voz de entrada, mãos livres (FEITA, falta testar em Windows real).** Só por voz: sem caixa de digitar e sem apertar nada para falar. O microfone fica aberto (`Mic.start`, ScriptProcessor 2048 amostras; obsoleto mas funciona no Electron) e `_onBlock` segmenta sozinho: ruído de fundo = menor volume dos primeiros 500 ms e depois acompanhado enquanto ninguém fala; limiar = clamp(ruído×3,5; 0,008..0,04); começa com 2 blocos seguidos acima, guarda 400 ms de pré-roll para não cortar a primeira sílaba, termina com 1,1 s de silêncio (ou 20 s), descarta o que tiver menos de 350 ms de voz. Cada frase vai em **WAV 16 kHz mono** (`encodeWav`) por `stt:transcribe` ao main, que envia `multipart` ao Whisper do Groq (`language=pt`). Limites gratuitos por busca: 20 req/min, 2 mil req/dia, 7.200 s de áudio/hora (mín. 10 s cobrados por pedido); o app limita a 10 transcrições/min.
+
+**Quando o Jarvis age** (`app.js`, `handleSegment`): só se a frase começar com "Jarvis" (`wake.js`), ou dentro da janela de conversa de 15 s (`FOLLOW_UP_MS`) aberta depois de cada resposta, "Pois não?" ou "não entendi". Conversa ao redor é transcrita e ignorada. Se não entender dentro da conversa, fala "Não entendi, pode repetir?" e continua ouvindo (até 2 vezes seguidas). Erros de configuração (chave, conexão, limite) aparecem na legenda no máximo 1 vez por minuto, sem falar. **O microfone fica mudo (`mic.setPaused`) enquanto o estado é `thinking`/`speaking` e volta 700 ms depois de `idle`**, para o Jarvis não ouvir a própria voz (com caixas de som no lugar de fone o eco ainda pode vazar; fone é o ideal). Botão "Escuta ligada/desligada" na barra e Ctrl+M; `listenOnStart` (padrão ligado) abre o microfone ao iniciar. **Privacidade:** só trechos com fala vão ao Groq; o texto de Ajustes diz isso.
+
+**Microfone no Windows do Axl:** o "Grupo de microfones" da Intel Smart Sound falha no Chromium (`Could not start audio source`); com fone funciona. `Mic._open` abre o padrão, ordena os candidatos (escolhido em `micLabel` > reais > atalhos > virtuais, regex `VIRTUAL`: o Steam Streaming Microphone abre mudo!), tenta várias configurações por dispositivo e guarda `mic.report` para as mensagens. `micCompat` (`src/compat.js`, `disable-features=AudioServiceSandbox`, exige reiniciar via `app:relaunch`) é a aposta para o Intel, ainda não confirmada. Plano B: fone ou microfone USB. O botão Testar microfone (Ajustes) mede o pico com `Mic.stats` e explica com `explainNoSpeech`.
+
+Sem palavra de ativação local (Vosk/openWakeWord) por ora: a ativação depende da transcrição do Whisper; uma palavra local economizaria cota e não enviaria áudio ambiente, mas pesa no i3.
 
 ## Como trabalhar neste projeto
 

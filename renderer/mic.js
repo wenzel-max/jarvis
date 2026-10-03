@@ -1,10 +1,14 @@
-// Microfone: grava uma fala e para sozinho quando você fica em silêncio.
+// Microfone sempre aberto: detecta sozinho quando você fala, corta cada frase e entrega em WAV 16 kHz.
 // Também mede o volume (0..1) para a esfera pulsar enquanto o Jarvis ouve.
 
-const MIME_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
-const POLL_MS = 50;
-const NOISE_CALIBRATION_MS = 350;  // mede o ruído do ambiente antes de decidir o que é voz
-const MIN_SPEECH_MS = 300;         // menos que isso é estalo ou tosse, não fala
+const BLOCK = 2048;                // amostras por bloco de áudio (~43 ms a 48 kHz)
+const CALIBRATION_MS = 500;        // mede o ruído do ambiente antes de decidir o que é voz
+const PREROLL_MS = 400;            // guarda o que veio antes da voz, para não cortar a primeira sílaba
+const START_BLOCKS = 2;            // blocos seguidos acima do limiar para considerar que começou a fala
+const SILENCE_END_MS = 1100;       // silêncio que encerra a frase
+const MIN_VOICED_MS = 350;         // menos voz que isso é estalo ou tosse, não fala
+const MAX_SEGMENT_MS = 20000;      // frase longa demais é cortada e enviada
+const WHISPER_RATE = 16000;        // taxa nativa do Whisper; também deixa o arquivo pequeno
 const MAX_CANDIDATES = 8;
 
 // Microfones virtuais (Steam, mesa de som, OBS...) abrem sem erro mas só entregam silêncio.
@@ -79,15 +83,54 @@ export function explainNoSpeech(stats, report) {
   return `O Jarvis abriu ${dev}, mas o volume ficou baixo (nível máximo ${pct(stats.peak)}%). Fale mais perto e mais alto e tente de novo.${extra}`;
 }
 
+/** Junta blocos Float32, converte para 16 kHz mono e empacota como WAV 16 bits. */
+function encodeWav(blocks, sampleRate) {
+  let total = 0;
+  for (const b of blocks) total += b.length;
+  const ratio = sampleRate / WHISPER_RATE;
+  const outLen = Math.floor(total / ratio);
+  const pcm = new Int16Array(outLen);
+  // média simples de cada janela de entrada (filtro passa-baixa barato antes de reduzir a taxa)
+  let bi = 0, bo = 0;
+  const at = (i) => {
+    while (bi < blocks.length && i - bo >= blocks[bi].length) { bo += blocks[bi].length; bi++; }
+    return blocks[bi]?.[i - bo] ?? 0;
+  };
+  for (let o = 0; o < outLen; o++) {
+    const start = Math.floor(o * ratio);
+    const end = Math.max(start + 1, Math.floor((o + 1) * ratio));
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += at(i);
+    const v = Math.max(-1, Math.min(1, sum / (end - start)));
+    pcm[o] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const dv = new DataView(buf);
+  const str = (off, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(off + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); dv.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, WHISPER_RATE, true); dv.setUint32(28, WHISPER_RATE * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return buf;
+}
+
 export class Mic {
   constructor() {
-    this.level = 0;      // volume atual, 0..1
-    this.stats = null;   // da última gravação: { label, peak, speechMs }
-    this.report = [];    // o que foi tentado em cada dispositivo na última abertura
-    this.preferred = ''; // parte do nome do microfone escolhido pelo usuário ('' = automático)
-    this.active = false;
-    this._finish = null;
-    this._cancel = null;
+    this.level = 0;        // volume atual, 0..1
+    this.stats = null;     // { label, peak, speechMs } desde que abriu
+    this.report = [];      // o que foi tentado em cada dispositivo na última abertura
+    this.preferred = '';   // parte do nome do microfone escolhido pelo usuário ('' = automático)
+    this.running = false;
+    this.paused = false;
+    this.onSpeechStart = null;   // () => void
+    this.onSpeechEnd = null;     // ({ buffer, mime, ms } | null) => void; null = foi só barulho
+    this._graph = null;
+    this._seg = null;            // fala em andamento
+    this._preroll = [];
+    this._floor = Infinity;
+    this._calibMs = 0;
+    this._loud = 0;
   }
 
   /**
@@ -156,87 +199,101 @@ export class Mic {
     throw error;
   }
 
-  /** Para de gravar agora e entrega o que foi dito até aqui. */
-  finish() { this._finish?.(); }
-
-  /** Descarta a gravação. */
-  cancel() { this._cancel?.(); }
-
-  /**
-   * Grava até o silêncio. Devolve { buffer, mime } ou null se não houve fala (ou foi cancelado).
-   * Lança o erro do getUserMedia se o microfone não puder ser usado.
-   */
-  async record({ maxMs = 15000, noSpeechMs = 7000, silenceMs = 1300 } = {}) {
-    if (this.active) return null;
+  /** Abre o microfone e começa a escutar. Lança o erro do getUserMedia se não for possível. */
+  async start() {
+    if (this.running) return;
     const stream = await this._open();
-    this.active = true;
-    const stats = { label: stream.getAudioTracks()[0]?.label ?? '', peak: 0, speechMs: 0 };
-    this.stats = stats;
-
     const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    ctx.createMediaStreamSource(stream).connect(analyser);
-    const samples = new Uint8Array(analyser.fftSize);
+    const src = ctx.createMediaStreamSource(stream);
+    // ScriptProcessor está marcado como obsoleto, mas funciona no Electron e evita um arquivo extra de worklet.
+    const proc = ctx.createScriptProcessor(BLOCK, 1, 1);
+    const mute = ctx.createGain();
+    mute.gain.value = 0;                 // o processador precisa estar ligado à saída, sem tocar nada
+    src.connect(proc);
+    proc.connect(mute).connect(ctx.destination);
+    proc.onaudioprocess = (e) => this._onBlock(e.inputBuffer.getChannelData(0), ctx.sampleRate);
+    this._graph = { stream, ctx, proc, src, mute };
+    this.stats = { label: stream.getAudioTracks()[0]?.label ?? '', peak: 0, speechMs: 0 };
+    this._floor = Infinity;
+    this._calibMs = 0;
+    this._seg = null;
+    this._preroll = [];
+    this._loud = 0;
+    this.running = true;
+  }
 
-    const mimeType = MIME_TYPES.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
-    const rec = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: 32000 } : undefined);
-    const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-
-    const t0 = performance.now();
-    let floor = Infinity;               // ruído de fundo: o MENOR volume dos primeiros instantes
-    let speechMs = 0, lastVoice = 0, spoke = false;
-    let cancelled = false;
-    let timer = null;
-
-    const done = new Promise((resolve) => {
-      rec.onstop = () => resolve();
-    });
-    const stop = () => { if (rec.state !== 'inactive') rec.stop(); };
-    this._finish = stop;
-    this._cancel = () => { cancelled = true; stop(); };
-
-    const poll = () => {
-      analyser.getByteTimeDomainData(samples);
-      let sum = 0;
-      for (const b of samples) { const v = (b - 128) / 128; sum += v * v; }
-      const rms = Math.sqrt(sum / samples.length);
-      this.level = Math.min(1, rms * 5);
-      stats.peak = Math.max(stats.peak, rms);
-
-      const now = performance.now();
-      const elapsed = now - t0;
-      if (elapsed < NOISE_CALIBRATION_MS) {
-        floor = Math.min(floor, rms);   // se você já começou a falar, as pausas entre palavras ainda contam
-        return;
-      }
-      // Teto no limiar: voz de verdade passa dele mesmo em quarto barulhento ou com a fala já em curso.
-      const threshold = Math.min(0.035, Math.max(0.006, floor * 3));
-      if (rms > threshold) {
-        spoke = true;
-        speechMs += POLL_MS;
-        lastVoice = now;
-      }
-      if (spoke && now - lastVoice > silenceMs) stop();
-      else if (!spoke && elapsed > noSpeechMs) stop();
-      else if (elapsed > maxMs) stop();
-    };
-
-    rec.start(250);
-    timer = setInterval(poll, POLL_MS);
-    await done;
-
-    clearInterval(timer);
-    stream.getTracks().forEach((t) => t.stop());
-    ctx.close().catch(() => {});
+  stop() {
+    const g = this._graph;
+    this._graph = null;
+    this.running = false;
+    this._seg = null;
     this.level = 0;
-    this.active = false;
-    this._finish = this._cancel = null;
+    if (!g) return;
+    g.proc.onaudioprocess = null;
+    g.stream.getTracks().forEach((t) => t.stop());
+    g.ctx.close().catch(() => {});
+  }
 
-    stats.speechMs = speechMs;
-    if (cancelled || speechMs < MIN_SPEECH_MS || !chunks.length) return null;
-    const blob = new Blob(chunks, { type: rec.mimeType || mimeType || 'audio/webm' });
-    return { buffer: await blob.arrayBuffer(), mime: blob.type };
+  /** Enquanto pausado, o áudio é descartado (o Jarvis não deve ouvir a própria voz). */
+  setPaused(paused) {
+    this.paused = paused;
+    if (paused) {
+      this._seg = null;
+      this._preroll = [];
+      this._loud = 0;
+      this.level = 0;
+    }
+  }
+
+  /** Zera o pico medido (usado pelo teste de microfone). */
+  resetStats() {
+    if (this.stats) { this.stats.peak = 0; this.stats.speechMs = 0; }
+  }
+
+  _onBlock(data, sampleRate) {
+    if (!this.running) return;
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    const blockMs = (data.length / sampleRate) * 1000;
+    if (this.paused) { this.level = 0; return; }
+
+    this.level = Math.min(1, rms * 5);
+    this.stats.peak = Math.max(this.stats.peak, rms);
+
+    if (this._calibMs < CALIBRATION_MS) {      // aprende o ruído do ambiente (o menor volume visto)
+      this._floor = Math.min(this._floor, rms);
+      this._calibMs += blockMs;
+      return;
+    }
+    // O ruído de fundo continua sendo acompanhado enquanto ninguém fala.
+    if (!this._seg && rms < this._floor * 3.5) this._floor = this._floor * 0.97 + rms * 0.03;
+    const threshold = Math.min(0.04, Math.max(0.008, this._floor * 3.5));
+    const voiced = rms > threshold;
+    if (voiced) this.stats.speechMs += blockMs;
+    const copy = Float32Array.from(data);
+
+    if (!this._seg) {
+      this._preroll.push(copy);
+      while (this._preroll.length * blockMs > PREROLL_MS) this._preroll.shift();
+      this._loud = voiced ? this._loud + 1 : 0;
+      if (this._loud >= START_BLOCKS) {
+        this._seg = { blocks: [...this._preroll], sampleRate, voicedMs: 0, silentMs: 0, ms: this._preroll.length * blockMs };
+        this._preroll = [];
+        this._loud = 0;
+        this.onSpeechStart?.();
+      }
+      return;
+    }
+
+    const seg = this._seg;
+    seg.blocks.push(copy);
+    seg.ms += blockMs;
+    if (voiced) { seg.voicedMs += blockMs; seg.silentMs = 0; } else { seg.silentMs += blockMs; }
+    if (seg.silentMs >= SILENCE_END_MS || seg.ms >= MAX_SEGMENT_MS) {
+      this._seg = null;
+      if (seg.voicedMs < MIN_VOICED_MS) { this.onSpeechEnd?.(null); return; }
+      this.onSpeechEnd?.({ buffer: encodeWav(seg.blocks, seg.sampleRate), mime: 'audio/wav', ms: seg.ms });
+    }
   }
 }

@@ -25,11 +25,6 @@
 
     <section class="center">
       <p id="caption" class="caption" aria-live="polite"></p>
-      <form id="ask-form" class="ask" autocomplete="off">
-        <input id="ask-input" type="text" maxlength="500" placeholder="Pergunte alguma coisa ao Jarvis" aria-label="Pergunte ao Jarvis">
-        <button id="ask-mic" type="button" class="btn" title="Falar com o Jarvis (Ctrl+M)">Falar</button>
-        <button id="ask-send" type="submit" class="btn">Perguntar</button>
-      </form>
     </section>
 
     <section class="side side-right" aria-label="Notícias">
@@ -43,6 +38,7 @@
       <p id="status" class="status"><span class="dot" aria-hidden="true"></span><span id="status-text">Pronto</span></p>
       <div class="bar-actions">
         <button id="btn-stop" type="button" class="btn" hidden>Parar</button>
+        <button id="btn-mic" type="button" class="btn" title="Liga ou desliga a escuta (Ctrl+M)">Escuta desligada</button>
         <button id="btn-brief" type="button" class="btn">Resumo do dia</button>
         <button id="btn-settings" type="button" class="btn">Ajustes</button>
       </div>
@@ -70,6 +66,8 @@
         <label class="field"><span>Microfone</span>
           <select id="set-mic"></select>
         </label>
+        <label class="check"><input id="set-listen" type="checkbox"><span>Ouvir o tempo todo (diga "Jarvis")</span></label>
+        <p class="hint">O Jarvis só envia ao Groq os trechos em que ouve fala, e só responde quando você chama "Jarvis" ou logo depois de uma resposta. Pause com Ctrl+M.</p>
         <label class="check"><input id="set-mic-compat" type="checkbox"><span>Modo de compatibilidade do microfone</span></label>
         <p class="hint">Ligue se o Jarvis não conseguir abrir o microfone do notebook (erro "Could not start audio source"). Precisa reiniciar o Jarvis.</p>
         <div id="compat-restart" class="row" hidden>
