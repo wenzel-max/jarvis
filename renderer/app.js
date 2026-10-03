@@ -1,6 +1,6 @@
 import { Orb } from './orb.js';
 import { Voice } from './voice.js';
-import { Mic, micErrorMessage, explainNoSpeech } from './mic.js';
+import { Mic, micErrorMessage, explainNoSpeech, listMicrophones, cleanLabel } from './mic.js';
 import { buildBriefing, formatClock, formatDate, greeting, relativeTime, weatherLabel } from './format.js';
 
 const api = window.jarvis;
@@ -292,6 +292,7 @@ async function listen() {
 
   let heard = null;
   let problem = null;
+  mic.preferred = settings.micLabel;
   try {
     heard = await mic.record();
   } catch (err) {
@@ -303,7 +304,7 @@ async function listen() {
 
   if (problem || !heard) {
     askInput.disabled = askSend.disabled = false;
-    showNotice(problem ?? explainNoSpeech(mic.stats));
+    showNotice(problem ?? explainNoSpeech(mic.stats, mic.report));
     return;
   }
 
@@ -429,8 +430,22 @@ async function refreshAiStatus() {
     : 'Sem chave ainda. Crie uma chave gratuita no Groq e cole aqui para poder fazer perguntas.';
 }
 
+/** Preenche a lista de microfones; os nomes só aparecem depois que o microfone foi aberto uma vez. */
+async function refreshMicList() {
+  const select = $('#set-mic');
+  const devices = (await listMicrophones()).filter((d) => !d.alias && d.label);
+  const options = [{ value: '', text: 'Automático (evita microfones virtuais)' }];
+  for (const d of devices) options.push({ value: cleanLabel(d.label), text: d.virtual ? `${cleanLabel(d.label)} (virtual)` : cleanLabel(d.label) });
+  if (settings.micLabel && !options.some((o) => o.value === settings.micLabel)) {
+    options.push({ value: settings.micLabel, text: `${settings.micLabel} (não encontrado agora)` });
+  }
+  select.replaceChildren(...options.map((o) => { const n = el('option', null, o.text); n.value = o.value; return n; }));
+  select.value = settings.micLabel;
+}
+
 function openSettings() {
   fillSettings();
+  refreshMicList();
   drawer.hidden = false;
   $('#settings-close').focus();
   loadVoices();
@@ -520,6 +535,7 @@ function bindSettings() {
     await save({ aiModel: e.target.value });
     e.target.value = settings.aiModel;
   });
+  $('#set-mic').addEventListener('change', (e) => save({ micLabel: e.target.value }));
   $('#btn-mic-test').addEventListener('click', async () => {
     const msg = $('#mic-msg');
     const btn = $('#btn-mic-test');
@@ -532,18 +548,20 @@ function bindSettings() {
     msg.textContent = 'Ouvindo por 4 segundos. Diga alguma coisa.';
     setState('listening');
     let problem = null;
+    mic.preferred = settings.micLabel;
     try {
       await mic.record({ maxMs: 4000, noSpeechMs: 4000, silenceMs: 4000 });
     } catch (err) {
       problem = micErrorMessage(err);
     }
     setState('idle');
+    refreshMicList();
     btn.textContent = 'Testar microfone';
     if (problem) { msg.textContent = problem; return; }
     const s = mic.stats;
     msg.textContent = s.speechMs >= 300
-      ? `Funcionando: "${s.label || 'microfone'}" captou a sua voz (nível máximo ${Math.round(Math.min(1, s.peak * 5) * 100)}%).`
-      : explainNoSpeech(s);
+      ? `Funcionando: "${cleanLabel(s.label) || 'microfone'}" captou a sua voz (nível máximo ${Math.round(Math.min(1, s.peak * 5) * 100)}%).`
+      : explainNoSpeech(s, mic.report);
   });
   $('#set-stt-model').addEventListener('change', async (e) => {
     await save({ sttModel: e.target.value });
