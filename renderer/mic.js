@@ -16,7 +16,7 @@ export function micErrorMessage(err) {
     case 'OverconstrainedError':
       return 'Não encontrei nenhum microfone. Conecte um e tente de novo.';
     case 'NotReadableError':
-      return 'O microfone está em uso por outro programa. Feche-o e tente de novo.';
+      return 'Não consegui abrir o microfone. Feche programas que possam estar usando, como Discord, Teams ou chamadas no navegador, e confira em Configurações, Sistema, Som, se o microfone certo está selecionado.';
     default:
       return 'Não consegui usar o microfone. Tente de novo.';
   }
@@ -28,6 +28,22 @@ export class Mic {
     this.active = false;
     this._finish = null;
     this._cancel = null;
+  }
+
+  /**
+   * Abre o microfone. Alguns drivers recusam os filtros de áudio do navegador
+   * (NotReadableError); nesse caso tenta de novo com o microfone "cru".
+   */
+  async _open() {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (err) {
+      if (err?.name !== 'NotReadableError' && err?.name !== 'OverconstrainedError') throw err;
+      console.warn('[microfone] filtros recusados, tentando sem eles:', err.name);
+      return navigator.mediaDevices.getUserMedia({ audio: true });
+    }
   }
 
   /** Para de gravar agora e entrega o que foi dito até aqui. */
@@ -42,9 +58,7 @@ export class Mic {
    */
   async record({ maxMs = 15000, noSpeechMs = 7000, silenceMs = 1300 } = {}) {
     if (this.active) return null;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    const stream = await this._open();
     this.active = true;
 
     const ctx = new AudioContext();
