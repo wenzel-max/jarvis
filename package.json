@@ -1,6 +1,6 @@
 {
   "name": "jarvis",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Jarvis: assistente pessoal de desktop (esfera dourada, clima, notícias, voz).",
   "main": "main.js",
   "author": "Axl",

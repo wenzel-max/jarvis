@@ -2,7 +2,7 @@
 // Testa src/ai.js sem rede: servidor local que imita o streaming (SSE) da API.
 const http = require('node:http');
 const assert = require('node:assert');
-const { streamChat, ask, transcribe, Sentencer, cleanForSpeech } = require('../src/ai');
+const { streamChat, ask, transcribe, Sentencer, cleanForSpeech, webSearch } = require('../src/ai');
 
 const sse = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 
@@ -281,6 +281,40 @@ async function withServer(handler, fn) {
       const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: `${base}/chat/completions`, fallback: null, onSentence() {} });
       assert.match(r.error, /limite gratuito/);
       assert.doesNotMatch(r.error, /não aceitou o modelo/);
+    });
+  }
+
+  // ---- busca na internet: Gemini (Google Search) primeiro; sem ele, Compound do Groq; sem nenhum, avisa o que fazer ----
+  {
+    const seen = [];
+    const gem = (status, parts) => (req, res) => {
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        seen.push({ url: req.url, key: req.headers['x-goog-api-key'], body: JSON.parse(b) });
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status === 200 ? { candidates: [{ content: { parts } }] } : { error: { message: 'x' } }));
+      });
+    };
+    await withServer(gem(200, [{ text: 'O Flamengo joga **sábado** contra o Santos.' }]), async (base) => {
+      const out = await webSearch('próximo jogo do Flamengo', { settings: { fallbackModel: 'gemini-x' }, geminiKey: 'gk', geminiBase: base, key: null });
+      assert.strictEqual(out, 'O Flamengo joga sábado contra o Santos.');
+      assert.strictEqual(seen[0].url, '/v1/models/gemini-x:generateContent');
+      assert.strictEqual(seen[0].key, 'gk');
+      assert.deepStrictEqual(seen[0].body.tools, [{ google_search: {} }]);
+    });
+    // Gemini falha: cai no Groq (aqui sem modelo Compound na conta) e o aviso manda colar a chave certa
+    const logs = [];
+    await withServer(gem(429, []), async (gBase) => {
+      await withServer((req, res) => {
+        if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'llama-3.1-8b-instant' }] })); return; }
+        res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'model not found', code: 'model_not_found' } }));
+      }, async (base) => {
+        const out = await webSearch('x', { settings: { webModel: 'groq/compound-mini' }, geminiKey: 'gk', geminiBase: gBase, key: 'k', endpoint: `${base}/chat/completions`, log: (k, t) => logs.push(t) });
+        assert.match(out, /não está disponível agora/);
+        assert.ok(logs.some((l) => /busca pelo Gemini falhou: Atingi o limite/.test(l)));
+        const sem = await webSearch('x', { settings: { webModel: 'groq/compound-mini' }, geminiKey: '', key: 'k', endpoint: `${base}/chat/completions` });
+        assert.match(sem, /chave gratuita do Gemini/);
+      });
     });
   }
 

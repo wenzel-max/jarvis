@@ -99,7 +99,7 @@ async function boot() {
     weather: feeds.getForecast,
     openers: { openPath: (p) => shell.openPath(p), openExternal: (u) => shell.openExternal(u) },
     google,
-    web: (q, ctx) => ai.webSearch(q, { settings: settings.get(), signal: ctx?.signal, onSetting: (k, v) => settings.update({ [k]: v }) }),
+    web: (q, ctx) => ai.webSearch(q, { settings: settings.get(), signal: ctx?.signal, log: (k, t) => log.write(k, t), onSetting: (k, v) => settings.update({ [k]: v }) }),
     isGoogleConnected: () => google.status().connected,
     log: (kind, text) => log.write(kind, text),
     spotify: { definitions: spotify.definitions, handlers: spotify.handlers },

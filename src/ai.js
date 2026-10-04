@@ -454,7 +454,47 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
 // ---------- busca na internet (modelo Compound do Groq, com busca embutida) ----------
 const WEB_SYSTEM = 'Você pesquisa na web para um assistente de voz. Responda em português do Brasil, só com os fatos, em até quatro frases curtas, sem markdown, sem links e sem listas. Diga a data ou o horário quando forem relevantes. Se não achar, diga que não achou.';
 
-async function webSearch(query, { settings, key: keyOverride, signal, endpoint = ENDPOINT, onSetting } = {}) {
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+/** Busca com a pesquisa do Google embutida no Gemini (plano gratuito do Google AI Studio). Devolve texto ou lança. */
+async function geminiSearch(query, { key, model, signal, base = GEMINI_BASE }) {
+  let res;
+  try {
+    res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', signal: signal ?? AbortSignal.timeout(25000),
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: WEB_SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ text: query }] }],
+        tools: [{ google_search: {} }],
+        generationConfig: { maxOutputTokens: 600, temperature: 0.2 },
+      }),
+    });
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw new Error('Sem conexão com o Gemini. Verifique a internet.');
+  }
+  if (!res.ok) {
+    const { message } = await errorDetail(res);
+    throw new Error(res.status === 429 ? 'Atingi o limite gratuito da busca do Gemini.' : `A busca do Gemini respondeu com erro ${res.status}${message ? `: ${message.slice(0, 120)}` : ''}.`);
+  }
+  const j = await res.json();
+  const text = (j.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join(' ');
+  return cleanForSpeech(text);
+}
+
+async function webSearch(query, { settings, key: keyOverride, signal, endpoint = ENDPOINT, onSetting, geminiKey, geminiBase, log } = {}) {
+  // Primeiro a busca do Gemini (gratuita com a chave de reserva); a do Groq (Compound) costuma não existir no plano gratuito.
+  const gKey = geminiKey ?? readKey('gemini');
+  if (gKey) {
+    try {
+      const text = await geminiSearch(query, { key: gKey, model: settings?.fallbackModel || 'gemini-2.5-flash', signal, base: geminiBase });
+      if (text) return text.slice(0, 1500);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      log?.('ferramenta', `busca pelo Gemini falhou: ${e.message}`);
+    }
+  }
   const key = keyOverride ?? readKey();
   if (!key) return 'Falta a chave do Groq, então não consigo pesquisar.';
   const ask1 = async (model) => {
@@ -480,7 +520,7 @@ async function webSearch(query, { settings, key: keyOverride, signal, endpoint =
   } catch (e) {
     if (!e.isModelError) throw e;
     const alt = await pickModel({ key, bad: model, signal, endpoint, kind: 'web' });
-    if (!alt) return 'A busca na internet não está disponível na sua conta do Groq agora.';
+    if (!alt) return gKey ? 'A busca na internet não está disponível agora.' : 'A busca na internet não está disponível na sua conta do Groq. Colar a chave gratuita do Gemini em Ajustes ativa a busca.';
     model = alt;
     text = await ask1(model);
     onSetting?.('webModel', alt);
