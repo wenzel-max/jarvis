@@ -147,6 +147,23 @@ const lastTool = (b) => b.messages.filter((m) => m.role === 'tool').at(-1)?.cont
   assert.match(lastTool(requests.at(-1).body), /não existe/);
   assert.strictEqual(await tools.run('agenda_criar', 'texto solto'), 'Não deu certo: Faltou o título do compromisso.');
 
+  // ---- pergunta sobre o que muda com o tempo: a primeira volta é obrigada a pesquisar ----
+  requests.length = 0;
+  script = (b) => (hasToolResult(b)
+    ? { content: 'O próximo jogo do Flamengo é no sábado.' }
+    : { calls: [{ name: 'pesquisar_na_internet', args: { consulta: 'próximo jogo do Flamengo' } }] });
+  r = await ask('Qual é o próximo jogo do Flamengo?');
+  assert.strictEqual(requests.length, 3, 'pergunta, busca (o mesmo servidor falso) e resposta');
+  assert.deepStrictEqual(requests[0].body.tool_choice, { type: 'function', function: { name: 'pesquisar_na_internet' } });
+  assert.strictEqual(requests[2].body.tool_choice, 'auto', 'só a primeira volta é forçada');
+  assert.match(requests[0].body.messages[0].content, /SEMPRE pesquise/);
+  assert.strictEqual(r.text, 'O próximo jogo do Flamengo é no sábado.');
+  // pergunta comum não é forçada
+  requests.length = 0;
+  script = () => ({ content: 'Hoje é domingo.' });
+  await ask('Que dia é hoje?');
+  assert.strictEqual(requests[0].body.tool_choice, 'auto');
+
   // ---- modelo monta a chamada errado (400 tool_use_failed): repete sem ferramentas ----
   requests.length = 0;
   script = (b) => (b.tool_choice === 'auto' ? { status: 400, json: { error: { message: 'Failed to call a function.', code: 'tool_use_failed' } } } : { content: 'Posso ajudar sim.' });

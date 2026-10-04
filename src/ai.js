@@ -132,6 +132,10 @@ const httpErrors = (name) => ({
 const pad = (n) => String(n).padStart(2, '0');
 const localIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 
+// Perguntas sobre coisas que mudam com o tempo: o modelo pequeno costuma responder "não sei" em vez de pesquisar.
+// Nelas a primeira volta é obrigada a usar a busca.
+const TIME_SENSITIVE = /\b(jogo|jogos|partida|placar|campeonato|rodada|escala[cç][aã]o|classifica[cç][aã]o|not[ií]cias?|cota[cç][aã]o|d[oó]lar|euro|bitcoin|bolsa|lan[cç]amento|estreia|ganhou|venceu|perdeu|empatou)\b/i;
+
 function systemPrompt({ userName, city, capabilities = [], memory = '' }) {
   const now = new Date();
   const agora = now.toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
@@ -144,7 +148,7 @@ function systemPrompt({ userName, city, capabilities = [], memory = '' }) {
     'Nada de markdown, listas, tabelas, emojis nem links. Escreva números, horas e unidades como se fala ("vinte e oito graus", "três e meia").',
     'Se a pergunta for vaga, devolva uma pergunta curta. Se não souber, diga isso com naturalidade. Chame a pessoa pelo nome só de vez em quando.',
     capabilities.length
-      ? `Você pode ${capabilities.join('; ')}. Use as ferramentas para isso, em vez de inventar. Antes de uma ferramenta demorada, como pesquisar, diga uma frase curtinha ("Deixa eu ver isso."). Depois de usar uma ferramenta, conte o resultado de forma natural e curta, sem ler ids. Se a ferramenta falhar ou não achar nada, diga isso com franqueza em uma frase, nunca fique em silêncio e nunca prometa checar de novo. Datas como "amanhã" ou "sexta" você calcula a partir de agora: ${localIso(now)} (fuso ${tz}).`
+      ? `Você pode ${capabilities.join('; ')}. Use as ferramentas para isso, em vez de inventar. Para qualquer coisa que muda com o tempo (jogos, placares, notícias, cotações, lançamentos), SEMPRE pesquise antes de responder; nunca diga que não sabe sem ter pesquisado. Antes de uma ferramenta demorada, como pesquisar, diga uma frase curtinha ("Deixa eu ver isso."). Depois de usar uma ferramenta, conte o resultado de forma natural e curta, sem ler ids. Se a ferramenta falhar ou não achar nada, diga isso com franqueza em uma frase, nunca fique em silêncio e nunca prometa checar de novo. Datas como "amanhã" ou "sexta" você calcula a partir de agora: ${localIso(now)} (fuso ${tz}).`
       : '',
     online ? '' : 'Você não tem acesso à internet nem ao computador do usuário nesta conversa.',
     `Agora é ${agora}. O usuário mora em ${city}.`,
@@ -215,9 +219,10 @@ async function errorDetail(res) {
 }
 
 // Modelos que não servem para conversa por texto.
-const NOT_CHAT = /whisper|tts|speech|guard|safeguard|embed|orpheus|playai|moderation/i;
+const NOT_CHAT = /whisper|tts|speech|guard|safeguard|embed|orpheus|playai|moderation|allam|compound/i;
 // Ordem de preferência: pequenos e rápidos primeiro (voz pede resposta ágil).
-const PREFERRED_CHAT = [/llama.*8b.*instant/i, /8b/i, /instant|flash|mini/i, /llama-3\.3-70b/i, /llama/i, /./];
+// Sem coringa no fim: modelo estranho (ex.: allam, árabe) responde mal e não chama ferramentas.
+const PREFERRED_CHAT = [/llama.*8b.*instant/i, /gpt-oss-20b/i, /8b/i, /instant|flash|mini/i, /llama-3\.3-70b/i, /llama/i, /gpt-oss|qwen|kimi/i];
 // Só Whisper multilíngue: os "distil-whisper" e variantes "-en" são apenas em inglês.
 const PREFERRED_STT = [/^whisper.*turbo/i, /^whisper/i];
 const PREFERRED_WEB = [/compound-mini/i, /compound/i];
@@ -364,11 +369,12 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
     // 'auto': o modelo escolhe; 'none': as ferramentas continuam na lista (a API exige isso quando há chamadas
     // no histórico) mas ele não pode chamar mais nenhuma; 'off': nunca houve ferramentas.
     let mode = defs.length > 0 ? 'auto' : 'off';
+    let forceSearch = defs.some((d) => d.function.name === 'pesquisar_na_internet') && TIME_SENSITIVE.test(q);
     const turn = async () => {
       const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(turnTimeoutMs)]);
       let emitted = false;
       const say = (t) => { emitted = true; onSentence(t); };
-      const run = () => streamTurn({ key: provider.key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : 'auto', signal, onSentence: say, endpoint: provider.endpoint, name: provider.name });
+      const run = () => streamTurn({ key: provider.key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : forceSearch ? { type: 'function', function: { name: 'pesquisar_na_internet' } } : 'auto', signal, onSentence: say, endpoint: provider.endpoint, name: provider.name });
       try {
         return await run();
       } catch (err) {
@@ -380,7 +386,8 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
           if (alt && alt !== model) {
             onFallback?.(`${e.message} Usando o modelo ${alt}.`);
             model = alt;
-            try { return await run(); } catch (e2) { if (!(e2.canFallback && fb && !emitted && !ctrl.signal.aborted)) throw e2; e = e2; }
+            // Se o outro modelo também falhar, vale o erro ORIGINAL (o limite), nunca o de um modelo que o usuário não escolheu.
+            try { return await run(); } catch (e2) { if (ctrl.signal.aborted) throw e2; if (e2.canFallback) e = e2; }
           }
         }
         if (e.canFallback && fb && provider.name === 'Groq' && !emitted && !ctrl.signal.aborted) {
@@ -411,6 +418,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
     let spoken = '';
     for (let step = 0; ; step++) {
       const t = await turn();
+      forceSearch = false;   // só a primeira volta é obrigada a pesquisar
       spoken = `${spoken} ${t.text}`.trim();
       if (!t.toolCalls.length || mode !== 'auto') break;
       if (step >= MAX_TOOL_STEPS) {   // preso em ferramentas: força uma resposta com o que já tem

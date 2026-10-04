@@ -252,5 +252,37 @@ async function withServer(handler, fn) {
     });
   }
 
+  // ---- modelo estranho da conta (allam) nunca é escolhido; se o alternativo falhar, vale o erro do limite ----
+  {
+    const settings = { userName: 'Axl', city: { name: 'Natal' }, aiModel: 'llama-3.1-8b-instant', fallbackModel: 'g' };
+    const used = [];
+    await withServer((req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'allam-2-7b' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-guard-4' }, { id: 'groq/compound' }, { id: 'llama-3.3-70b-versatile' }] })); return; }
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        used.push(JSON.parse(b).model);
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Rate limit reached on tokens per day (TPD). Please try again in 5m.' } }));
+      });
+    }, async (base) => {
+      const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: `${base}/chat/completions`, fallback: null, onSentence() {} });
+      assert.deepStrictEqual(used, ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile']);
+      assert.match(r.error, /limite gratuito do Groq.*Volta em cerca de 5 minutos/);
+    });
+    // alternativo recusado como modelo: continua valendo o erro do limite, não "não aceitou o modelo"
+    await withServer((req, res) => {
+      if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'llama-3.1-8b-instant' }, { id: 'llama-3.3-70b-versatile' }] })); return; }
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        if (JSON.parse(b).model === 'llama-3.1-8b-instant') { res.writeHead(429, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'tokens per day (TPD). try again in 5m' } })); return; }
+        res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'model not found', code: 'model_not_found' } }));
+      });
+    }, async (base) => {
+      const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: `${base}/chat/completions`, fallback: null, onSentence() {} });
+      assert.match(r.error, /limite gratuito/);
+      assert.doesNotMatch(r.error, /não aceitou o modelo/);
+    });
+  }
+
   console.log('ai: todos os testes passaram');
 })().catch((e) => { console.error(e); process.exit(1); });
