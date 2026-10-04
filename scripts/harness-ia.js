@@ -312,6 +312,7 @@ app.whenReady().then(async () => {
   check('"não entendi" -> Jarvis pede para repetir', spoken.slice(spokenB3).includes('Não entendi, pode repetir?'), JSON.stringify(spoken.slice(spokenB3)));
 
   // ---- só chamou o nome ----
+  await sleep(30000);   // o limite local é de 10 transcrições por minuto; o teste anda mais rápido que uma pessoa
   const spokenB4 = spoken.length;
   sttScript.push('Jarvis');
   await speakAndWait(900, 1500);
