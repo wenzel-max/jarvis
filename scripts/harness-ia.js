@@ -176,7 +176,7 @@ app.whenReady().then(async () => {
   await js(win, FAKE_MIC);
 
   const results = [];
-  const check = (name, ok, extra = '') => { results.push(ok); console.log(`${ok ? 'OK  ' : 'FALHA'} ${name} ${extra}`); };
+  const check = (name, ok, extra = '') => { results.push(ok); console.log(`${ok ? 'OK  ' : 'FALHA'} ${name} ${extra}`); if (!ok) console.log('   log do app:', JSON.stringify(logLines.slice(-8))); };
   const statesFrom = async () => { const s = await js(win, 'window.__states'); await js(win, 'window.__states = window.__states.slice(-1)'); return s; };
   // espera o Jarvis voltar ao repouso e o microfone voltar ao normal (700 ms depois)
   const settle = async (max = 30000) => {
