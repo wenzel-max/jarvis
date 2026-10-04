@@ -194,6 +194,7 @@ function registerIpc() {
       if (reply.provider === 'Gemini') log.write('ia', 'respondido pelo Gemini (reserva)');
       // Se o modelo configurado foi trocado por outro que funcionou, guarda o novo.
       if (reply.model && reply.model !== settings.get().aiModel) settings.update({ aiModel: reply.model });
+      if (reply.geminiModel) settings.update({ fallbackModel: reply.geminiModel });
       return reply;
     });
   });

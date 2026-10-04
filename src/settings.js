@@ -15,7 +15,7 @@ const DEFAULTS = {
   speakOnStart: true,
   fullscreen: true,
   aiModel: 'llama-3.1-8b-instant',  // modelo do Groq usado nas perguntas
-  fallbackModel: 'gemini-2.5-flash',  // modelo do Gemini usado quando o Groq está limitado ou fora do ar
+  fallbackModel: 'gemini-flash-latest',  // modelo do Gemini usado quando o Groq está limitado ou fora do ar
   sttModel: 'whisper-large-v3-turbo', // modelo do Groq que transcreve a fala
   webSearch: true,             // a IA pode pesquisar na internet (modelo Compound do Groq)
   webModel: 'groq/compound-mini',

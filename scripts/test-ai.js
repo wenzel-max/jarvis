@@ -2,7 +2,7 @@
 // Testa src/ai.js sem rede: servidor local que imita o streaming (SSE) da API.
 const http = require('node:http');
 const assert = require('node:assert');
-const { streamChat, ask, transcribe, Sentencer, cleanForSpeech, webSearch } = require('../src/ai');
+const { streamChat, ask, transcribe, Sentencer, cleanForSpeech, webSearch, pickGeminiModel } = require('../src/ai');
 
 const sse = (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 
@@ -314,6 +314,47 @@ async function withServer(handler, fn) {
         assert.ok(logs.some((l) => /busca pelo Gemini falhou: Atingi o limite/.test(l)));
         const sem = await webSearch('x', { settings: { webModel: 'groq/compound-mini' }, geminiKey: '', key: 'k', endpoint: `${base}/chat/completions` });
         assert.match(sem, /chave gratuita do Gemini/);
+      });
+    });
+  }
+
+  // ---- modelo do Gemini aposentado ("no longer available to new users"): descobre o atual com a própria chave ----
+  {
+    const MODELS = { models: [
+      { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.8-flash-lite', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.8-pro', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.8-flash-image', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/embedding-001', supportedGenerationMethods: ['embedContent'] },
+    ] };
+    const server = (okModel) => (req, res) => {
+      const json = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      if (req.method === 'GET') { json(200, MODELS); return; }
+      let b = ''; req.on('data', (c) => { b += c; });
+      req.on('end', () => {
+        const model = req.url.includes(':generateContent') ? decodeURIComponent(req.url.split('/models/')[1].split(':')[0]) : JSON.parse(b).model;
+        if (model !== okModel) { json(404, { error: { message: `This model models/${model} is no longer available to new users. Please update your code to use models/${okModel}.` } }); return; }
+        if (req.url.includes(':generateContent')) { json(200, { candidates: [{ content: { parts: [{ text: 'Sábado, às 16 horas.' }] } }] }); return; }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sse('Resposta do modelo novo.') + 'data: [DONE]\n\n');
+      });
+    };
+    await withServer(server('gemini-3.8-flash'), async (base) => {
+      assert.strictEqual(await pickGeminiModel({ key: 'g', bad: 'gemini-2.5-flash', base }), 'gemini-3.8-flash');   // mais novo, estável, sem lite/pro/image
+      // busca
+      let saved = null;
+      const out = await webSearch('jogo', { settings: { fallbackModel: 'gemini-2.5-flash' }, geminiKey: 'g', geminiBase: base, key: null, onSetting: (k, v) => { saved = [k, v]; } });
+      assert.strictEqual(out, 'Sábado, às 16 horas.');
+      assert.deepStrictEqual(saved, ['fallbackModel', 'gemini-3.8-flash']);
+      // conversa de reserva (Groq limitado)
+      await withServer((req, res) => { res.writeHead(429); res.end('{}'); }, async (groq) => {
+        const settings = { userName: 'Axl', city: { name: 'Natal' }, aiModel: 'llama-3.1-8b-instant', fallbackModel: 'gemini-2.5-flash' };
+        const r = await ask({ question: 'oi', history: [] }, { settings, key: 'k', endpoint: groq, fallback: { key: 'g', endpoint: `${base}/chat`, name: 'Gemini', model: 'gemini-2.5-flash', base }, onSentence() {} });
+        assert.strictEqual(r.provider, 'Gemini');
+        assert.strictEqual(r.geminiModel, 'gemini-3.8-flash');
+        assert.strictEqual(r.model, 'llama-3.1-8b-instant');
       });
     });
   }

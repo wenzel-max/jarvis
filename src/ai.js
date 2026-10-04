@@ -201,7 +201,7 @@ async function throwHttpError(res, model, name = 'Groq') {
     throw err;
   }
   if (res.status === 404 || /model/i.test(`${code} ${message}`)) {
-    const err = new Error(`O Groq não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
+    const err = new Error(`O ${name} não aceitou o modelo "${model}". Troque o modelo em Ajustes.`);
     err.isModelError = true;
     throw err;
   }
@@ -363,6 +363,8 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
     let model = settings.aiModel;
     let persistModel = settings.aiModel;   // só o modelo do Groq que de fato serve é gravado nos Ajustes
     let altTried = false;
+    let geminiTried = false;
+    let persistGemini = null;
     let provider = { key, endpoint, name: 'Groq' };
     // Reserva (Gemini): só entra se a chave existe e o Groq estiver limitado, fora do ar ou sem conexão.
     const fb = fallbackOverride ?? (() => { const k = readKey('gemini'); return k ? { key: k, endpoint: GEMINI_ENDPOINT, name: 'Gemini', model: settings.fallbackModel } : null; })();
@@ -375,35 +377,50 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       let emitted = false;
       const say = (t) => { emitted = true; onSentence(t); };
       const run = () => streamTurn({ key: provider.key, model, messages, tools: mode === 'off' ? undefined : defs, toolChoice: mode === 'none' ? 'none' : forceSearch ? { type: 'function', function: { name: 'pesquisar_na_internet' } } : 'auto', signal, onSentence: say, endpoint: provider.endpoint, name: provider.name });
-      try {
-        return await run();
-      } catch (err) {
-        let e = err;
-        // Cada modelo do Groq tem a sua própria cota: ao estourar uma, tenta outro modelo da conta antes do Gemini.
-        if (e.isRateLimit && provider.name === 'Groq' && !altTried && !emitted && !ctrl.signal.aborted) {
-          altTried = true;
-          const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint }).catch(() => null);
-          if (alt && alt !== model) {
-            onFallback?.(`${e.message} Usando o modelo ${alt}.`);
-            model = alt;
-            // Se o outro modelo também falhar, vale o erro ORIGINAL (o limite), nunca o de um modelo que o usuário não escolheu.
-            try { return await run(); } catch (e2) { if (ctrl.signal.aborted) throw e2; if (e2.canFallback) e = e2; }
+      let limitErr = null;       // o limite que fez trocar de modelo: é ele que vale se o outro modelo também falhar
+      let modelSwapped = false;
+      for (;;) {
+        try {
+          return await run();
+        } catch (e) {
+          if (ctrl.signal.aborted) throw e;
+          // Cada modelo do Groq tem a sua própria cota: ao estourar uma, tenta outro modelo da conta antes do Gemini.
+          if (e.isRateLimit && provider.name === 'Groq' && !altTried && !emitted) {
+            altTried = true;
+            limitErr = e;
+            const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint }).catch(() => null);
+            if (alt && alt !== model) {
+              onFallback?.(`${e.message} Usando o modelo ${alt}.`);
+              model = alt;
+              continue;
+            }
           }
+          if (e.canFallback && fb && provider.name === 'Groq' && !emitted) {
+            provider = fb;
+            model = fb.model || GEMINI_DEFAULT_MODEL;
+            onFallback?.(limitErr?.message ?? e.message);
+            continue;
+          }
+          // Modelo do Gemini aposentado: descobre o atual com a própria chave e segue.
+          if (e.isModelError && provider.name === 'Gemini' && !geminiTried) {
+            geminiTried = true;
+            const alt = await pickGeminiModel({ key: provider.key, bad: model, signal: ctrl.signal, base: provider.base });
+            if (!alt) throw e;
+            model = alt;
+            persistGemini = alt;
+            continue;
+          }
+          if (e.isToolError && mode === 'auto') { mode = 'none'; continue; }   // sem poder chamar ferramentas, pelo menos responde
+          // Se o modelo alternativo falhou por outro motivo, vale o erro do limite, nunca o de um modelo que o usuário não escolheu.
+          if (limitErr && provider.name === 'Groq' && !e.canFallback) throw limitErr;
+          // Modelo recusado (renomeado ou aposentado): troca por um que a conta tenha e tenta de novo.
+          if (!e.isModelError || modelSwapped) throw e;
+          modelSwapped = true;
+          const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint });
+          if (!alt) throw e;
+          model = alt;
+          persistModel = alt;
         }
-        if (e.canFallback && fb && provider.name === 'Groq' && !emitted && !ctrl.signal.aborted) {
-          provider = fb;
-          model = fb.model || 'gemini-2.5-flash';
-          onFallback?.(e.message);
-          return run();
-        }
-        if (e.isToolError && mode === 'auto') { mode = 'none'; return run(); }   // sem poder chamar ferramentas, pelo menos responde
-        // Modelo recusado (renomeado ou aposentado): troca por um que a conta tenha e tenta de novo.
-        if (!e.isModelError || ctrl.signal.aborted) throw e;
-        const alt = await pickModel({ key: provider.key, bad: model, signal: ctrl.signal, endpoint: provider.endpoint });
-        if (!alt) throw e;
-        model = alt;
-        persistModel = alt;
-        return run();
       }
     };
 
@@ -437,7 +454,7 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
       }
     }
     if (!spoken) return { error: 'O Groq não devolveu resposta. Tente de novo.' };
-    return { text: spoken, model: persistModel, provider: provider.name };
+    return { text: spoken, model: persistModel, provider: provider.name, ...(persistGemini ? { geminiModel: persistGemini } : {}) };
   } catch (e) {
     if (ctrl.signal.aborted) {
       const timedOut = ctrl.signal.reason?.message === 'timeout';
@@ -455,6 +472,28 @@ async function ask({ question, history }, { settings, onSentence, endpoint, key:
 const WEB_SYSTEM = 'Você pesquisa na web para um assistente de voz. Responda em português do Brasil, só com os fatos, em até quatro frases curtas, sem markdown, sem links e sem listas. Diga a data ou o horário quando forem relevantes. Se não achar, diga que não achou.';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_DEFAULT_MODEL = 'gemini-flash-latest';
+
+/**
+ * O Google aposenta modelos para chaves novas ("no longer available to new users"). Em vez de fixar um nome,
+ * pergunta à conta quais modelos Flash existem e escolhe o mais novo estável. Devolve o id ou null.
+ */
+async function pickGeminiModel({ key, bad, signal, base = GEMINI_BASE }) {
+  try {
+    const res = await fetch(`${base}/models?pageSize=200`, { headers: { 'x-goog-api-key': key }, signal: signal ?? AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const ids = (j.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m) => String(m.name).replace(/^models\//, ''))
+      .filter((id) => id !== bad && /^gemini-(?:[\d.]+-)?flash(?:-latest)?$/.test(id));
+    const version = (id) => Number(/gemini-([\d.]+)-flash/.exec(id)?.[1] ?? 0);
+    ids.sort((a, b) => version(b) - version(a));
+    return ids.find((id) => version(id) > 0) ?? ids[0] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** Busca com a pesquisa do Google embutida no Gemini (plano gratuito do Google AI Studio). Devolve texto ou lança. */
 async function geminiSearch(query, { key, model, signal, base = GEMINI_BASE }) {
@@ -476,7 +515,9 @@ async function geminiSearch(query, { key, model, signal, base = GEMINI_BASE }) {
   }
   if (!res.ok) {
     const { message } = await errorDetail(res);
-    throw new Error(res.status === 429 ? 'Atingi o limite gratuito da busca do Gemini.' : `A busca do Gemini respondeu com erro ${res.status}${message ? `: ${message.slice(0, 120)}` : ''}.`);
+    const err = new Error(res.status === 429 ? 'Atingi o limite gratuito da busca do Gemini.' : `A busca do Gemini respondeu com erro ${res.status}${message ? `: ${message.slice(0, 120)}` : ''}.`);
+    err.isModelError = res.status === 404 || /no longer available|is not found|not supported/i.test(message);
+    throw err;
   }
   const j = await res.json();
   const text = (j.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join(' ');
@@ -487,8 +528,18 @@ async function webSearch(query, { settings, key: keyOverride, signal, endpoint =
   // Primeiro a busca do Gemini (gratuita com a chave de reserva); a do Groq (Compound) costuma não existir no plano gratuito.
   const gKey = geminiKey ?? readKey('gemini');
   if (gKey) {
+    const gModel = settings?.fallbackModel || GEMINI_DEFAULT_MODEL;
     try {
-      const text = await geminiSearch(query, { key: gKey, model: settings?.fallbackModel || 'gemini-2.5-flash', signal, base: geminiBase });
+      let text;
+      try {
+        text = await geminiSearch(query, { key: gKey, model: gModel, signal, base: geminiBase });
+      } catch (e) {
+        if (!e.isModelError || signal?.aborted) throw e;
+        const alt = await pickGeminiModel({ key: gKey, bad: gModel, signal, base: geminiBase });   // modelo aposentado: troca pelo atual
+        if (!alt) throw e;
+        text = await geminiSearch(query, { key: gKey, model: alt, signal, base: geminiBase });
+        onSetting?.('fallbackModel', alt);
+      }
       if (text) return text.slice(0, 1500);
     } catch (e) {
       if (signal?.aborted) throw e;
@@ -590,4 +641,4 @@ function cancel() {
   active = null;
 }
 
-module.exports = { init, hasKey, setKey, ask, transcribe, cancel, webSearch, streamChat, streamTurn, listModels, pickModel, Sentencer, cleanForSpeech };
+module.exports = { pickGeminiModel, init, hasKey, setKey, ask, transcribe, cancel, webSearch, streamChat, streamTurn, listModels, pickModel, Sentencer, cleanForSpeech };
