@@ -37,8 +37,10 @@ function setKey(raw, provider = 'groq') {
     fs.rmSync(fileFor(provider), { force: true });
     return;
   }
-  if (!/^[A-Za-z0-9_-]{20,200}$/.test(key)) {
-    throw new Error(`A chave tem formato inválido. Copie a chave inteira${provider === 'gemini' ? ', que começa com AIza' : ', que começa com gsk_'}.`);
+  // Chaves novas do Google não começam só com AIza (algumas têm pontos), então aqui só se confere o alfabeto e o tamanho.
+  const shape = provider === 'gemini' ? /^[A-Za-z0-9._-]{20,300}$/ : /^[A-Za-z0-9_-]{20,200}$/;
+  if (!shape.test(key)) {
+    throw new Error(`A chave tem formato inválido. Copie a chave inteira${provider === 'gemini' ? ' do Google AI Studio, sem espaços' : ', que começa com gsk_'}.`);
   }
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('O Windows não liberou o cofre de senhas, então a chave não pode ser guardada com segurança.');
