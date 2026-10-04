@@ -24,15 +24,17 @@ function distance(a, b) {
   return row[b.length];
 }
 
-function isNameWord(raw) {
+// `strict`: com o Jarvis escondido na bandeja não dá para conferir a tela, então só vale o nome quase exato
+// (no máximo 1 letra de diferença). "Garis", "Jarbas" e afins só valem com a janela aberta.
+function isNameWord(raw, strict = false) {
   const w = stripAccents(raw);
   if (w.length < 4 || w.length > 9) return false;
-  return WAKE_WORD.test(w) || (STARTS_LIKE_J.test(w) && distance(w, NAME) <= 2);
+  return WAKE_WORD.test(w) || (STARTS_LIKE_J.test(w) && distance(w, NAME) <= (strict ? 1 : 2));
 }
 
 /** Quantas palavras (0, 1 ou 2) começando em `i` formam o nome: "Jarvis" ou "já vis" / "jar vis" em duas partes. */
-function nameLength(words, i) {
-  if (isNameWord(words[i])) return 1;
+function nameLength(words, i, strict = false) {
+  if (isNameWord(words[i], strict)) return 1;
   if (i + 1 < words.length) {
     const joined = stripAccents(words[i]) + stripAccents(words[i + 1]);
     if (joined.length >= 5 && STARTS_LIKE_J.test(joined) && distance(joined, NAME) <= 1) return 2;
@@ -47,10 +49,10 @@ const trimEdges = (s) => s.replace(/^[\s,.:;!?\-–]+/, '').replace(/[\s,;:\-–
  * "Ei, Jarvis, ...") ou como última palavra ("Que horas são, Jarvis?"). Se não sobra nada depois do nome,
  * o pedido é o que veio antes dele ("Obrigado, Jarvis").
  */
-export function parseCommand(text) {
+export function parseCommand(text, { strict = false } = {}) {
   const words = String(text ?? '').trim().split(/\s+/).filter(Boolean);
   for (let i = 0; i < Math.min(WORDS_TO_LOOK_AT, words.length); i++) {
-    const n = nameLength(words, i);
+    const n = nameLength(words, i, strict);
     if (!n) continue;
     const after = trimEdges(words.slice(i + n).join(' '));
     const before = trimEdges(words.slice(0, i).join(' '));
@@ -59,7 +61,7 @@ export function parseCommand(text) {
   }
   for (const n of [1, 2]) {   // o nome no fim: "..., Jarvis?"
     const i = words.length - n;
-    if (i >= WORDS_TO_LOOK_AT && nameLength(words, i) === n) {
+    if (i >= WORDS_TO_LOOK_AT && nameLength(words, i, strict) === n) {
       return { woke: true, command: trimEdges(words.slice(0, i).join(' ')) };
     }
   }

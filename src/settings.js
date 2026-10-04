@@ -23,6 +23,7 @@ const DEFAULTS = {
   earcons: true,               // sons curtos de confirmação (reconheceu o pedido, escuta ligada/desligada)
   apps: [],                    // programas extras que o Jarvis pode abrir: [{ name, target }]
   autoUpdate: true,            // procura versões novas no GitHub (só no app instalado)
+  wakeShowsWindow: true,       // ao ouvir "Jarvis" com a janela escondida, ela aparece
   backgroundMode: true,        // fechar a janela deixa o Jarvis na bandeja, ouvindo; "Jarvis" faz a janela voltar
   bargeIn: true,               // falar por cima interrompe o Jarvis (desligue se usar caixas de som e ele se ouvir)
   listenOnStart: true,         // microfone sempre aberto ao iniciar (o Jarvis só age quando ouve "Jarvis")
@@ -54,6 +55,7 @@ function sanitize(raw) {
   out.bargeIn = !!out.bargeIn;
   out.earcons = !!out.earcons;
   out.backgroundMode = !!out.backgroundMode;
+  out.wakeShowsWindow = !!out.wakeShowsWindow;
   out.autoUpdate = !!out.autoUpdate;
   out.duckMusic = !!out.duckMusic;
   out.webSearch = !!out.webSearch;

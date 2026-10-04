@@ -494,7 +494,7 @@ async function handleSegment(seg) {
     return;
   }
 
-  const parsed = parseCommand(reply.text);
+  const parsed = parseCommand(reply.text, { strict: document.hidden });   // escondido: só o nome quase exato acorda
   if (sleeping) {
     if (!parsed.woke) { api.log('ouvi', `em espera, ignorado: "${reply.text}"`); next(); return; }   // nem aviso na tela
     setSleeping(false);
@@ -523,7 +523,7 @@ async function handleSegment(seg) {
   if (carry && !short && !media) command = `${carry} ${command}`.trim();
   api.log('ouvi', `comando: "${command}"${carry ? ' (continuação)' : ''}`);
   if (command && settings.earcons) playEarcon('ok');      // mostra na hora que ele entendeu
-  if (command) api.wakeWindow();                          // escondido na bandeja: a janela volta para a conversa
+  if (command && settings.wakeShowsWindow) api.wakeWindow();                          // escondido na bandeja: a janela volta para a conversa
 
   if (!command) {                                // só chamou o nome
     await speak(['Pois não?']);
@@ -680,6 +680,7 @@ function fillSettings() {
   $('#set-earcons').checked = settings.earcons;
   $('#set-duck').checked = settings.duckMusic;
   $('#set-background').checked = settings.backgroundMode;
+  $('#set-wakeshow').checked = settings.wakeShowsWindow;
   $('#set-autoupdate').checked = settings.autoUpdate;
   $('#set-websearch').checked = settings.webSearch;
   $('#set-apps').value = (settings.apps ?? []).map((a) => `${a.name} | ${a.target}`).join('\n');
@@ -852,6 +853,7 @@ function bindSettings() {
     if (r.ok) input.value = '';
     refreshAiStatus();
   });
+  $('#set-wakeshow').addEventListener('change', (e) => save({ wakeShowsWindow: e.target.checked }));
   $('#set-background').addEventListener('change', (e) => save({ backgroundMode: e.target.checked }));
   $('#set-autoupdate').addEventListener('change', (e) => save({ autoUpdate: e.target.checked }));
   $('#set-ai-model').addEventListener('change', async (e) => {

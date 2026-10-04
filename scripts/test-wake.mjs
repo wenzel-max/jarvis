@@ -43,6 +43,12 @@ const curtas = [
   ['Para de tocar a música', null], ['Que horas são?', null], ['Chega mais perto', null], ['', null], [undefined, null],
 ];
 curtas.push(['para de escutar', 'sleep'], ['Para de me escutar', 'sleep'], ['pode parar de ouvir', 'sleep'], ['não escute mais', 'sleep'], ['entra em modo de espera', 'sleep'], ['para de escutar por favor', 'sleep'], ['para', 'stop'], ['para a música', null]);
+// escondido na bandeja (strict): só o nome quase exato acorda
+for (const t of ['Jarvis, que horas são?', 'Jarves que horas são', 'Garvis que horas são', 'Ei Jarvis tudo bem']) assert.ok(parseCommand(t, { strict: true }).woke, `strict deve acordar: ${t}`);
+for (const t of ['Garis que horas são', 'Jarbas que horas são', 'Chaves tá aberto', 'Eu comprei um jarro novo', 'gravis agora']) {
+  assert.ok(!parseCommand(t, { strict: true }).woke, `strict NÃO deve acordar: ${t}`);
+}
+assert.ok(parseCommand('Jarbas que horas são').woke);   // com a janela aberta continua valendo
 for (const [texto, esperado] of curtas) assert.strictEqual(classifyShort(texto), esperado, `"${texto}"`);
 assert.strictEqual(speechKey('  Olá, Jarvis!  Tá?'), 'ola jarvis ta');
 

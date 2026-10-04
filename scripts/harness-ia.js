@@ -13,7 +13,7 @@ const settings = {
   userName: 'Axl', userNameSpoken: '', voice: 'pt-BR-AntonioNeural', rate: 0, pitch: 0,
   city: { name: 'Natal', admin: 'Rio Grande do Norte', lat: -5.79, lon: -35.2 },
   autostart: false, startDelaySec: 0, speakOnStart: false, fullscreen: false, listenOnStart: false, bargeIn: true,
-  duckMusic: true, earcons: true, apps: [], backgroundMode: true, autoUpdate: true,
+  duckMusic: true, earcons: true, apps: [], backgroundMode: true, wakeShowsWindow: true, autoUpdate: true,
   aiModel: 'llama-3.1-8b-instant', sttModel: 'whisper-large-v3-turbo', micLabel: '', micCompat: false,
 };
 let aiMode = 'ok';
@@ -94,12 +94,13 @@ function fakeIpc() {
   ipcMain.handle('agenda:today', () => {
     if (googleExpired) return { connected: false, needsReconnect: true, events: [], tasks: [] };
     if (!googleOn) return { connected: false, events: [], tasks: [] };
+    const ymd = (plus) => { const d = new Date(); d.setDate(d.getDate() + plus); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
     const at = (H, M = 0) => { const d = new Date(); d.setHours(H, M, 0, 0); return d.toISOString(); };
     return {
       connected: true,
       events: [
         { id: 'e1', title: 'Reunião com o time', start: at(23, 30), end: at(23, 59), allDay: false },
-        { id: 'e2', title: 'Aniversário da Ana', start: '2026-10-05', end: '2026-10-06', allDay: true },
+        { id: 'e2', title: 'Aniversário da Ana', start: ymd(0), end: ymd(1), allDay: true },
       ],
       tasks: [{ id: 't1', title: 'Comprar pão' }, { id: 't2', title: 'Pagar a luz' }],
     };
