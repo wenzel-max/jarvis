@@ -753,6 +753,7 @@ async function refreshSpotifyStatus() {
 
 async function refreshDiag() {
   const box = $('#diag-log');
+  $('#app-version').textContent = `Jarvis versão ${await api.appVersion()}`;
   const usage = await api.usageSummary();
   box.value = `${usage}\n${(await api.logTail()) || 'Nada registrado ainda.'}`;
   box.scrollTop = box.scrollHeight;

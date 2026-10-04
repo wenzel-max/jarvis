@@ -250,6 +250,8 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-x-'));
     assert.equal(checks, 0);
     assert.equal(await mk().check(), 'ok');
     assert.equal(checks, 1);
+    handlers['update-not-available']({ version: '0.1.2' });
+    assert.ok(logs.some((l) => /nenhuma versão nova/.test(l)) && logs.some((l) => /procurando versão nova/.test(l)));
     handlers['update-downloaded']({ version: '1.2.0' });
     assert.ok(logs.some((l) => /1\.2\.0 baixada/.test(l)));
     const failing = { on() {}, checkForUpdates: async () => { throw new Error('404 Not Found\nmais coisa'); } };

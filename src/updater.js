@@ -18,10 +18,12 @@ function create({ isPackaged, settings, log = () => {}, load = () => require('el
       updater.logger = null;
       if (!updater.__jarvisWired) {
         updater.__jarvisWired = true;
+        updater.on('update-not-available', (i) => log('app', `atualização: nenhuma versão nova (a mais recente é a ${i?.version ?? 'atual'})`));
         updater.on('update-available', (i) => log('app', `atualização ${i?.version ?? ''} encontrada, baixando`));
         updater.on('update-downloaded', (i) => log('app', `atualização ${i?.version ?? ''} baixada: instala ao fechar o Jarvis`));
         updater.on('error', (e) => log('app', `atualização: ${String(e?.message ?? e).split('\n')[0].slice(0, 160)}`));
       }
+      log('app', 'atualização: procurando versão nova');
       await updater.checkForUpdates();
       return 'ok';
     } catch (e) {

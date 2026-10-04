@@ -66,6 +66,7 @@ function fakeIpc() {
   ipcMain.handle('app:quit', () => app.quit());
   ipcMain.handle('app:relaunch', () => {});
   ipcMain.handle('ai:key-status', () => ({ hasKey: true, hasFallbackKey }));
+  ipcMain.handle('app:version', () => '9.9.9');
   ipcMain.handle('usage:summary', () => 'Whisper nas últimas 24 h: 3 de 2000 pedidos (0%).');
   ipcMain.handle('win:wake', () => { wakeCalls++; });
   ipcMain.handle('win:conversation-ended', () => { endCalls++; });
@@ -555,6 +556,7 @@ app.whenReady().then(async () => {
   await click(win, '#set-background'); await click(win, '#set-autoupdate');
   await sleep(200);
   check('bandeja e atualização automática salvam nos Ajustes', settings.backgroundMode === false && settings.autoUpdate === false, JSON.stringify([settings.backgroundMode, settings.autoUpdate]));
+  check('Diagnóstico mostra a versão do Jarvis', /Jarvis versão 9\.9\.9/.test(await js(win, "document.querySelector('#app-version').textContent")));
   check('Diagnóstico mostra o uso do Whisper', /Whisper nas últimas 24 h/.test(await js(win, "document.querySelector('#diag-log').value")));
   check('o app chamou a janela quando ouviu um comando', wakeCalls > 0, String(wakeCalls));
   await click(win, '#btn-memory-clear');

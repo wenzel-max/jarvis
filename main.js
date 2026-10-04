@@ -87,6 +87,7 @@ async function boot() {
   ai.init(app.getPath('userData'));
   usage.init(app.getPath('userData'));
   log.init(app.getPath('userData'));
+  log.write('app', `Jarvis ${app.getVersion()} iniciado${app.isPackaged ? '' : ' (modo desenvolvimento)'}`);
   secrets.init(app.getPath('userData'), safeStorage);
   google.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
   spotify.init({ secrets, openBrowser: (url) => shell.openExternal(url) });
@@ -198,6 +199,7 @@ function registerIpc() {
   });
   ipcMain.handle('win:wake', () => bg?.show({ byWake: true }));
   ipcMain.handle('win:conversation-ended', () => bg?.conversationEnded());
+  ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('usage:summary', () => usage.summary());
   ipcMain.handle('memory:list', () => memory.list());
   ipcMain.handle('memory:remove', (_e, id) => { memory.remove(String(id ?? '')); return memory.list(); });

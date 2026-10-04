@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('jarvis', {
   wakeWindow: () => ipcRenderer.invoke('win:wake'),
   conversationEnded: () => ipcRenderer.invoke('win:conversation-ended'),
   onToggleListen: (cb) => ipcRenderer.on('cmd:toggle-listen', () => cb()),
+  appVersion: () => ipcRenderer.invoke('app:version'),
   usageSummary: () => ipcRenderer.invoke('usage:summary'),
   memoryList: () => ipcRenderer.invoke('memory:list'),
   memoryRemove: (id) => ipcRenderer.invoke('memory:remove', id),
