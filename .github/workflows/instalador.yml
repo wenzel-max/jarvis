@@ -31,6 +31,15 @@ jobs:
             git tag "$v"
             git push origin "$v"
           fi
+      # Cria a página da versão antes: o electron-builder envia dois arquivos ao mesmo tempo e, se a página
+      # ainda não existe, os dois tentam criá-la e um deles falha (erro 422 already_exists)
+      - name: Criar a página da versão
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="v$(node -p "require('./package.json').version")"
+          gh release view "$v" >/dev/null 2>&1 || gh release create "$v" --title "${v#v}" --notes "Instalador do Jarvis ${v#v}."
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
