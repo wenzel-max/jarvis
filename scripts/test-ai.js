@@ -290,6 +290,7 @@ async function withServer(handler, fn) {
     const gem = (status, parts) => (req, res) => {
       let b = ''; req.on('data', (c) => { b += c; });
       req.on('end', () => {
+        if (req.method === 'GET') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ models: [] })); return; }
         seen.push({ url: req.url, key: req.headers['x-goog-api-key'], body: JSON.parse(b) });
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(status === 200 ? { candidates: [{ content: { parts } }] } : { error: { message: 'x' } }));
@@ -315,6 +316,32 @@ async function withServer(handler, fn) {
         const sem = await webSearch('x', { settings: { webModel: 'groq/compound-mini' }, geminiKey: '', key: 'k', endpoint: `${base}/chat/completions` });
         assert.match(sem, /chave gratuita do Gemini/);
       });
+    });
+  }
+
+  // ---- busca: modelo sem cota (429) -> tenta outro Flash da chave; o que funcionou fica de dica na sessão ----
+  {
+    const calls = [];
+    const srv = (req, res) => {
+      const json = (st, body) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      if (req.method === 'GET') { json(200, { models: ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'].map((n) => ({ name: `models/${n}`, supportedGenerationMethods: ['generateContent'] })) }); return; }
+      req.resume();
+      req.on('end', () => {
+        const model = decodeURIComponent(req.url.split('/models/')[1].split(':')[0]); calls.push(model);
+        if (model !== 'gemini-3.5-flash') { json(429, { error: { message: `Quota exceeded for ${model} google_search` } }); return; }
+        json(200, { candidates: [{ content: { parts: [{ text: 'Achei no modelo que tem cota.' }] } }] });
+      });
+    };
+    await withServer(srv, async (base) => {
+      const logs = []; let saved = null;
+      const out = await webSearch('x', { settings: { fallbackModel: 'gemini-3.8-flash' }, geminiKey: 'g', geminiBase: base, key: null, log: (k, t) => logs.push(t), onSetting: (k, v) => { saved = v; } });
+      assert.strictEqual(out, 'Achei no modelo que tem cota.');
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash', 'gemini-3.5-flash']);   // o 3.8-flash é o configurado; o próximo disponível que não é lite vem antes do lite
+      assert.ok(logs.some((l) => /Quota exceeded for gemini-3.8-flash/.test(l)));
+      assert.strictEqual(saved, null, 'cota esgotada não troca o modelo salvo');
+      calls.length = 0;
+      await webSearch('y', { settings: { fallbackModel: 'gemini-3.8-flash' }, geminiKey: 'g', geminiBase: base, key: null });
+      assert.deepStrictEqual(calls, ['gemini-3.5-flash'], 'usa a dica da sessão');
     });
   }
 

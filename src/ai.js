@@ -479,19 +479,25 @@ const GEMINI_DEFAULT_MODEL = 'gemini-flash-latest';
  * pergunta à conta quais modelos Flash existem e escolhe o mais novo estável. Devolve o id ou null.
  */
 async function pickGeminiModel({ key, bad, signal, base = GEMINI_BASE }) {
+  return (await listGeminiModels({ key, bad, signal, base }))[0] ?? null;
+}
+
+/** Modelos Flash da chave, do mais novo para o mais antigo; os "lite" (outra cota) ficam por último. */
+async function listGeminiModels({ key, bad, signal, base = GEMINI_BASE }) {
   try {
     const res = await fetch(`${base}/models?pageSize=200`, { headers: { 'x-goog-api-key': key }, signal: signal ?? AbortSignal.timeout(10000) });
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const j = await res.json();
     const ids = (j.models ?? [])
       .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
       .map((m) => String(m.name).replace(/^models\//, ''))
-      .filter((id) => id !== bad && /^gemini-(?:[\d.]+-)?flash(?:-latest)?$/.test(id));
+      .filter((id) => id !== bad && /^gemini-(?:[\d.]+-)?flash(?:-lite)?(?:-latest)?$/.test(id));
     const version = (id) => Number(/gemini-([\d.]+)-flash/.exec(id)?.[1] ?? 0);
-    ids.sort((a, b) => version(b) - version(a));
-    return ids.find((id) => version(id) > 0) ?? ids[0] ?? null;
+    const rank = (id) => (/lite/.test(id) ? 1 : 0);
+    ids.sort((a, b) => rank(a) - rank(b) || version(b) - version(a) || (a.includes('latest') ? 1 : -1));
+    return ids;
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -515,8 +521,9 @@ async function geminiSearch(query, { key, model, signal, base = GEMINI_BASE }) {
   }
   if (!res.ok) {
     const { message } = await errorDetail(res);
-    const err = new Error(res.status === 429 ? 'Atingi o limite gratuito da busca do Gemini.' : `A busca do Gemini respondeu com erro ${res.status}${message ? `: ${message.slice(0, 120)}` : ''}.`);
+    const err = new Error(res.status === 429 ? `Atingi o limite gratuito da busca do Gemini (modelo ${model})${message ? `: ${message.slice(0, 140)}` : '.'}` : `A busca do Gemini respondeu com erro ${res.status}${message ? `: ${message.slice(0, 120)}` : ''}.`);
     err.isModelError = res.status === 404 || /no longer available|is not found|not supported/i.test(message);
+    err.isQuota = res.status === 429;
     throw err;
   }
   const j = await res.json();
@@ -524,21 +531,32 @@ async function geminiSearch(query, { key, model, signal, base = GEMINI_BASE }) {
   return cleanForSpeech(text);
 }
 
+let searchHint = null;   // último modelo do Gemini cuja busca funcionou nesta sessão
+
 async function webSearch(query, { settings, key: keyOverride, signal, endpoint = ENDPOINT, onSetting, geminiKey, geminiBase, log } = {}) {
   // Primeiro a busca do Gemini (gratuita com a chave de reserva); a do Groq (Compound) costuma não existir no plano gratuito.
   const gKey = geminiKey ?? readKey('gemini');
   if (gKey) {
     const gModel = settings?.fallbackModel || GEMINI_DEFAULT_MODEL;
     try {
+      // Modelo aposentado ou sem cota de busca: cada modelo Flash tem a sua; tenta os outros da chave (no máximo 4).
+      const tried = [searchHint?.for === gModel ? searchHint.model : gModel];
       let text;
-      try {
-        text = await geminiSearch(query, { key: gKey, model: gModel, signal, base: geminiBase });
-      } catch (e) {
-        if (!e.isModelError || signal?.aborted) throw e;
-        const alt = await pickGeminiModel({ key: gKey, bad: gModel, signal, base: geminiBase });   // modelo aposentado: troca pelo atual
-        if (!alt) throw e;
-        text = await geminiSearch(query, { key: gKey, model: alt, signal, base: geminiBase });
-        onSetting?.('fallbackModel', alt);
+      let lastErr = null;
+      for (let i = 0; i < 4 && !text; i++) {
+        try {
+          text = await geminiSearch(query, { key: gKey, model: tried.at(-1), signal, base: geminiBase });
+          if (!text) break;
+          searchHint = { for: gModel, model: tried.at(-1) };
+          if (lastErr?.isModelError && tried.at(-1) !== gModel) onSetting?.('fallbackModel', tried.at(-1));
+        } catch (e) {
+          if (signal?.aborted || !(e.isModelError || e.isQuota)) throw e;
+          lastErr = lastErr ?? e;
+          log?.('ferramenta', `busca pelo Gemini: ${e.message}`);
+          const next = (await listGeminiModels({ key: gKey, signal, base: geminiBase })).find((id) => !tried.includes(id));
+          if (!next) throw lastErr;
+          tried.push(next);
+        }
       }
       if (text) return text.slice(0, 1500);
     } catch (e) {
